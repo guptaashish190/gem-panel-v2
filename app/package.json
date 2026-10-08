@@ -2,12 +2,15 @@
   "name": "gem-tender-panel",
   "private": true,
   "version": "1.0.0",
+  "description": "GeM tender panel for bid search, prepare, and documents",
+  "author": "GeM Panel",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "tsc -p tsconfig.electron.json && vite build",
     "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "tsc -p tsconfig.electron.json && node --test dist-electron/gem.test.js dist-electron/parse.test.js dist-electron/template.test.js dist-electron/merge.test.js"
   },
@@ -25,7 +28,48 @@
     "@types/react-dom": "19.2.2",
     "@vitejs/plugin-react": "6.0.1",
     "electron": "44.7.0",
+    "electron-builder": "^26.8.1",
     "typescript": "7.0.2",
     "vite": "8.3.3"
+  },
+  "build": {
+    "appId": "com.gem.tenderpanel",
+    "productName": "GeM Tender Panel",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "config.json",
+        "to": "config.json"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.business"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

@@ -37,6 +37,11 @@ type AppConfig = {
   supabaseServiceKey: string
 }
 
+function configFilePath(): string {
+  if (app.isPackaged) return path.join(process.resourcesPath, 'config.json')
+  return path.join(__dirname, '../config.json')
+}
+
 function loadConfig(): AppConfig {
   const fallback: AppConfig = {
     gemBaseUrl: 'https://bidplus.gem.gov.in',
@@ -44,7 +49,7 @@ function loadConfig(): AppConfig {
     supabaseServiceKey: '',
   }
   try {
-    const raw = JSON.parse(readFileSync(path.join(__dirname, '../config.json'), 'utf8')) as Partial<AppConfig>
+    const raw = JSON.parse(readFileSync(configFilePath(), 'utf8')) as Partial<AppConfig>
     return {
       gemBaseUrl: raw.gemBaseUrl?.trim() || fallback.gemBaseUrl,
       supabaseUrl: raw.supabaseUrl?.trim() ?? '',
