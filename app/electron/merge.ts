@@ -1,5 +1,11 @@
 import { PDFDocument } from 'pdf-lib'
 
+export function pdfDownloadName(documentName: string, bidNumber: string): string {
+  const title = documentName.replace(/\.pdf$/i, '')
+  const cleaned = `${title} ${bidNumber}`.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
+  return `${cleaned || 'document'}.pdf`
+}
+
 export function isPdf(bytes: Uint8Array): boolean {
   const limit = Math.min(bytes.length, 1024)
   for (let index = 0; index <= limit - 5; index += 1) {

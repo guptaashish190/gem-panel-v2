@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { PDFDocument } from 'pdf-lib'
-import { isPdf, mergeError, mergeNamedPdfs } from './merge.js'
+import { isPdf, mergeError, mergeNamedPdfs, pdfDownloadName } from './merge.js'
 
 async function page(width: number): Promise<Uint8Array> {
   const doc = await PDFDocument.create()
   doc.addPage([width, 100])
   return new Uint8Array(await doc.save())
 }
+
+test('download name keeps one pdf extension and the bid number', () => {
+  assert.equal(pdfDownloadName('Experience Certificate.pdf', 'GEM/2026/B/1'), 'Experience Certificate GEM-2026-B-1.pdf')
+  assert.equal(pdfDownloadName('License: copy', 'GEM/1'), 'License- copy GEM-1.pdf')
+})
 
 test('isPdf accepts a header within the first kilobyte', () => {
   const bytes = new Uint8Array(12)

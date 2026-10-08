@@ -20,9 +20,11 @@ export function TemplateDialog({
   const [notice, setNotice] = useState<string | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [tab, setTab] = useState<'templates' | 'pdfs'>('templates')
+  const [merging, setMerging] = useState(false)
   const mergeBusy = useRef(false)
   const setMergeBusy = useCallback((busy: boolean) => {
     mergeBusy.current = busy
+    setMerging(busy)
   }, [])
 
   useEffect(() => {
@@ -143,6 +145,7 @@ export function TemplateDialog({
             role="tab"
             aria-selected={tab === 'templates'}
             className={tab === 'templates' ? 'pill active' : 'pill'}
+            disabled={merging}
             onClick={() => setTab('templates')}
           >
             Templates
@@ -154,6 +157,7 @@ export function TemplateDialog({
             aria-controls="prepare-pdfs"
             aria-selected={tab === 'pdfs'}
             className={tab === 'pdfs' ? 'pill active' : 'pill'}
+            disabled={merging}
             onClick={() => setTab('pdfs')}
           >
             PDFs

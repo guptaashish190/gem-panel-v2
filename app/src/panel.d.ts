@@ -122,7 +122,7 @@ export type MergeSource =
   | { kind: 'company'; name: string }
   | { kind: 'upload'; name: string; data: Uint8Array }
 
-export type MergeResult = { ok: true } | { ok: false; message: string }
+export type MergeResult = { ok: true } | { ok: false; message: string } | { ok: false; cancelled: true }
 
 export type FetchProgress =
   | { kind: 'phase'; phase: 'fetching' | 'downloading'; replace?: boolean }
@@ -172,6 +172,7 @@ export type PanelApi = {
     values: Record<string, string>,
   ) => Promise<boolean>
   mergeDocument: (bidNumber: string, documentName: string, sources: MergeSource[]) => Promise<MergeResult>
+  mergeDownload: (bidNumber: string, documentName: string, sources: MergeSource[]) => Promise<MergeResult>
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) => Promise<TemplateDownload>
   onRow: (listener: () => void) => () => void
   onFetchDone: (listener: () => void) => () => void

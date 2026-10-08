@@ -8,7 +8,7 @@ import { createLister, searchKeyword } from './gem.js'
 import * as files from './files.js'
 import { parsePdf } from './parse.js'
 import * as store from './store.js'
-import { mergeNamedPdfs } from './merge.js'
+import { mergeNamedPdfs, pdfDownloadName } from './merge.js'
 import { PLACEHOLDERS, renderTemplateDocument } from './template.js'
 import {
   GEM_PDF_NAME,
@@ -461,6 +461,26 @@ function register(): void {
 
   ipcMain.handle('merge-document', async (_event, bidNumber: unknown, documentName: unknown, sources: unknown) => {
     const db = records()
+    if (!db || typeof bidNumber !== 'string' || typeof documentName !== 'string') {
+      return { ok: false, message: 'Could not merge those PDFs.' }
+    }
+    const merged = await collectMerge(db, documentName, sources)
+    if (!merged.ok) return merged
+    try {
+      const extension = '.pdf'
+      const storedName = `${files.documentFileName(documentName)}${extension}`
+      const key = `${files.bidDirName(bidNumber)}/${storedName}`
+      await store.uploadStored(db, bidNumber, documentName, key, merged.bytes, 'application/pdf')
+      await files.writeDocument(dataRoot(), bidNumber, documentName, merged.bytes, extension)
+      notifyRows()
+      return { ok: true }
+    } catch {
+      return { ok: false, message: 'Could not save that document.' }
+    }
+  })
+
+  ipcMain.handle('merge-download', async (event, bidNumber: unknown, documentName: unknown, sources: unknown) => {
+    const db = records()
     const parts = mergeSourcesOf(sources)
     if (
       !db ||
@@ -473,28 +493,21 @@ function register(): void {
       return { ok: false, message: 'Could not merge those PDFs.' }
     }
     if (parts.length === 0) return { ok: false, message: 'Add at least one PDF.' }
-    const named: { name: string; bytes: Uint8Array }[] = []
-    for (const part of parts) {
-      if (part.kind === 'upload') {
-        named.push({ name: part.name.trim() || 'PDF', bytes: part.data })
-        continue
-      }
-      const bytes = await readCompanyPdf(db, part.name)
-      if (!bytes) return { ok: false, message: `${part.name} could not be read.` }
-      named.push({ name: part.name, bytes })
-    }
-    const merged = await mergeNamedPdfs(named)
-    if (!merged.ok) return merged
     try {
-      const extension = '.pdf'
-      const storedName = `${files.documentFileName(documentName)}${extension}`
-      const key = `${files.bidDirName(bidNumber)}/${storedName}`
-      await store.uploadStored(db, bidNumber, documentName, key, merged.bytes, 'application/pdf')
-      await files.writeDocument(dataRoot(), bidNumber, documentName, merged.bytes, extension)
-      notifyRows()
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options = {
+        defaultPath: pdfDownloadName(documentName, bidNumber),
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      }
+      const picked = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+      if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true }
+      const merged = await collectMerge(db, documentName, sources)
+      if (!merged.ok) return merged
+      const filePath = /\.pdf$/i.test(picked.filePath) ? picked.filePath : `${picked.filePath}.pdf`
+      await writeFile(filePath, merged.bytes)
       return { ok: true }
     } catch {
-      return { ok: false, message: 'Could not save that document.' }
+      return { ok: false, message: 'Could not download that file.' }
     }
   })
 
@@ -578,6 +591,27 @@ async function saveCopy(event: IpcMainInvokeEvent, source: string | null): Promi
   } catch {
     return 'failed'
   }
+}
+
+type MergeOutcome = { ok: true; bytes: Uint8Array } | { ok: false; message: string }
+
+async function collectMerge(db: SupabaseClient, documentName: unknown, sources: unknown): Promise<MergeOutcome> {
+  const parts = mergeSourcesOf(sources)
+  if (typeof documentName !== 'string' || !documentName.trim() || documentName === GEM_PDF_NAME || !parts) {
+    return { ok: false, message: 'Could not merge those PDFs.' }
+  }
+  if (parts.length === 0) return { ok: false, message: 'Add at least one PDF.' }
+  const named: { name: string; bytes: Uint8Array }[] = []
+  for (const part of parts) {
+    if (part.kind === 'upload') {
+      named.push({ name: part.name.trim() || 'PDF', bytes: part.data })
+      continue
+    }
+    const bytes = await readCompanyPdf(db, part.name)
+    if (!bytes) return { ok: false, message: `${part.name} could not be read.` }
+    named.push({ name: part.name, bytes })
+  }
+  return mergeNamedPdfs(named)
 }
 
 type MergeSourceInput = { kind: 'company'; name: string } | { kind: 'upload'; name: string; data: Uint8Array }

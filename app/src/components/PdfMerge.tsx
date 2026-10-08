@@ -85,20 +85,46 @@ export function PdfMerge({
     setNotice(null)
   }
 
+  function mergeSources(): MergeSource[] {
+    return rows.map((row) =>
+      row.kind === 'company' ? { kind: 'company', name: row.name } : { kind: 'upload', name: row.name, data: row.data },
+    )
+  }
+
+  function mergeNotice(result: Awaited<ReturnType<NonNullable<typeof window.panel>['mergeDocument']>> | undefined): string {
+    if (result && !result.ok && 'message' in result) return result.message
+    return 'Could not merge those PDFs.'
+  }
+
   async function onMerge() {
     const panel = window.panel
     if (!panel || busy || rows.length === 0) return
     setBusy(true)
     setNotice(null)
-    const sources: MergeSource[] = rows.map((row) =>
-      row.kind === 'company' ? { kind: 'company', name: row.name } : { kind: 'upload', name: row.name, data: row.data },
-    )
     try {
-      const result = await panel.mergeDocument(bidNumber, documentName, sources)
+      const result = await panel.mergeDocument(bidNumber, documentName, mergeSources())
       if (result?.ok) onClose()
-      else setNotice(result && !result.ok ? result.message : 'Could not merge those PDFs.')
+      else if (result && !result.ok && 'cancelled' in result) return
+      else setNotice(mergeNotice(result))
     } catch {
       setNotice('Could not merge those PDFs.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onDownload() {
+    const panel = window.panel
+    if (!panel || busy || rows.length === 0) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const result = await panel.mergeDownload(bidNumber, documentName, mergeSources())
+      if (result?.ok) onClose()
+      else if (result && !result.ok && 'cancelled' in result) return
+      else setNotice(mergeNotice(result))
+    } catch {
+      setNotice('Could not download that file.')
     } finally {
       setBusy(false)
     }
@@ -211,6 +237,9 @@ export function PdfMerge({
       <div className="settings-actions">
         <button type="button" className="btn btn-ghost" disabled={busy} onClick={onClose}>
           Close
+        </button>
+        <button type="button" className="btn btn-secondary" disabled={busy || rows.length === 0} onClick={() => void onDownload()}>
+          Merge and download
         </button>
         <button type="button" className="btn btn-primary" disabled={busy || rows.length === 0} onClick={() => void onMerge()}>
           Merge and save
