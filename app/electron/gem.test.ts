@@ -587,6 +587,7 @@ test('screen copy does not name records infrastructure', () => {
     '../src/App.tsx',
     '../src/SettingsPanel.tsx',
     '../src/TemplateDialog.tsx',
+    '../src/components/PdfMerge.tsx',
     '../src/TenderWindow.tsx',
     '../src/main.tsx',
     '../src/app.css',

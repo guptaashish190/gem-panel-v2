@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TemplateField, TextTemplate } from './panel'
+import { PdfMerge } from './components/PdfMerge'
 import { TemplatePreview } from './components/TemplatePreview'
 
 export function TemplateDialog({
@@ -19,10 +20,14 @@ export function TemplateDialog({
   const [notice, setNotice] = useState<string | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [tab, setTab] = useState<'templates' | 'pdfs'>('templates')
+  const mergeBusy = useRef(false)
+  const setMergeBusy = useCallback((busy: boolean) => {
+    mergeBusy.current = busy
+  }, [])
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape' && preview == null) onClose()
+      if (event.key === 'Escape' && preview == null && !mergeBusy.current) onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -118,9 +123,14 @@ export function TemplateDialog({
 
   return (
     <>
-    <div className="modal-back" onMouseDown={onClose}>
+    <div
+      className="modal-back"
+      onMouseDown={() => {
+        if (!mergeBusy.current) onClose()
+      }}
+    >
       <div
-        className="modal"
+        className={tab === 'pdfs' ? 'modal wide' : 'modal'}
         role="dialog"
         aria-modal="true"
         aria-labelledby="template-title"
@@ -140,6 +150,8 @@ export function TemplateDialog({
           <button
             type="button"
             role="tab"
+            id="prepare-pdfs-tab"
+            aria-controls="prepare-pdfs"
             aria-selected={tab === 'pdfs'}
             className={tab === 'pdfs' ? 'pill active' : 'pill'}
             onClick={() => setTab('pdfs')}
@@ -210,7 +222,10 @@ export function TemplateDialog({
             </button>
           </div>
         ) : null}
-        {notice ? (
+        <div id="prepare-pdfs" role="tabpanel" aria-labelledby="prepare-pdfs-tab" hidden={tab !== 'pdfs'}>
+          <PdfMerge bidNumber={bidNumber} documentName={documentName} onClose={onClose} onBusy={setMergeBusy} />
+        </div>
+        {tab === 'templates' && notice ? (
           <p className="form-note" role="status">
             {notice}
           </p>

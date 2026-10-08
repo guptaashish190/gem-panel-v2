@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('panel', {
   renderTemplate: (id: number, values: Record<string, string>) => ipcRenderer.invoke('render-template', id, values),
   saveTemplateDocument: (id: number, bidNumber: string, documentName: string, values: Record<string, string>) =>
     ipcRenderer.invoke('save-template-document', id, bidNumber, documentName, values),
+  mergeDocument: (bidNumber: string, documentName: string, sources: unknown) =>
+    ipcRenderer.invoke('merge-document', bidNumber, documentName, sources),
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) =>
     ipcRenderer.invoke('download-template', id, bidNumber, values),
   onRow: (listener: () => void) => {

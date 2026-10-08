@@ -118,6 +118,12 @@ export type TemplatePreview = {
 
 export type TemplateDownload = 'saved' | 'cancelled' | 'failed'
 
+export type MergeSource =
+  | { kind: 'company'; name: string }
+  | { kind: 'upload'; name: string; data: Uint8Array }
+
+export type MergeResult = { ok: true } | { ok: false; message: string }
+
 export type FetchProgress =
   | { kind: 'phase'; phase: 'fetching' | 'downloading'; replace?: boolean }
   | { kind: 'pages'; last: boolean }
@@ -165,6 +171,7 @@ export type PanelApi = {
     documentName: string,
     values: Record<string, string>,
   ) => Promise<boolean>
+  mergeDocument: (bidNumber: string, documentName: string, sources: MergeSource[]) => Promise<MergeResult>
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) => Promise<TemplateDownload>
   onRow: (listener: () => void) => () => void
   onFetchDone: (listener: () => void) => () => void

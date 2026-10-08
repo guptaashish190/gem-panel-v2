@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { readFileSync } from 'node:fs'
-import { copyFile, writeFile } from 'node:fs/promises'
+import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -8,6 +8,7 @@ import { createLister, searchKeyword } from './gem.js'
 import * as files from './files.js'
 import { parsePdf } from './parse.js'
 import * as store from './store.js'
+import { mergeNamedPdfs } from './merge.js'
 import { PLACEHOLDERS, renderTemplateDocument } from './template.js'
 import {
   GEM_PDF_NAME,
@@ -458,6 +459,45 @@ function register(): void {
     }
   })
 
+  ipcMain.handle('merge-document', async (_event, bidNumber: unknown, documentName: unknown, sources: unknown) => {
+    const db = records()
+    const parts = mergeSourcesOf(sources)
+    if (
+      !db ||
+      typeof bidNumber !== 'string' ||
+      typeof documentName !== 'string' ||
+      !documentName.trim() ||
+      documentName === GEM_PDF_NAME ||
+      !parts
+    ) {
+      return { ok: false, message: 'Could not merge those PDFs.' }
+    }
+    if (parts.length === 0) return { ok: false, message: 'Add at least one PDF.' }
+    const named: { name: string; bytes: Uint8Array }[] = []
+    for (const part of parts) {
+      if (part.kind === 'upload') {
+        named.push({ name: part.name.trim() || 'PDF', bytes: part.data })
+        continue
+      }
+      const bytes = await readCompanyPdf(db, part.name)
+      if (!bytes) return { ok: false, message: `${part.name} could not be read.` }
+      named.push({ name: part.name, bytes })
+    }
+    const merged = await mergeNamedPdfs(named)
+    if (!merged.ok) return merged
+    try {
+      const extension = '.pdf'
+      const storedName = `${files.documentFileName(documentName)}${extension}`
+      const key = `${files.bidDirName(bidNumber)}/${storedName}`
+      await store.uploadStored(db, bidNumber, documentName, key, merged.bytes, 'application/pdf')
+      await files.writeDocument(dataRoot(), bidNumber, documentName, merged.bytes, extension)
+      notifyRows()
+      return { ok: true }
+    } catch {
+      return { ok: false, message: 'Could not save that document.' }
+    }
+  })
+
   ipcMain.handle('download-template', async (event, id: unknown, bidNumber: unknown, values: unknown) => {
     const db = records()
     const templateId = idOf(id)
@@ -537,6 +577,50 @@ async function saveCopy(event: IpcMainInvokeEvent, source: string | null): Promi
     return 'saved'
   } catch {
     return 'failed'
+  }
+}
+
+type MergeSourceInput = { kind: 'company'; name: string } | { kind: 'upload'; name: string; data: Uint8Array }
+
+function mergeSourcesOf(value: unknown): MergeSourceInput[] | null {
+  if (!Array.isArray(value)) return null
+  const sources: MergeSourceInput[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const row = item as Record<string, unknown>
+    if (row.kind === 'company' && typeof row.name === 'string' && row.name.trim()) {
+      sources.push({ kind: 'company', name: row.name.trim() })
+      continue
+    }
+    if (row.kind === 'upload' && typeof row.name === 'string' && row.data instanceof Uint8Array) {
+      sources.push({ kind: 'upload', name: row.name, data: row.data })
+      continue
+    }
+    return null
+  }
+  return sources
+}
+
+async function readCompanyPdf(db: SupabaseClient, name: string): Promise<Uint8Array | null> {
+  try {
+    const root = dataRoot()
+    let file = await files.localCompanyDocumentPath(root, name)
+    if (!file) {
+      const key = await store.companyStorageKey(db, name)
+      const delivered = await files.deliverMissingFile({
+        storedKey: key,
+        readStored: (storedKey) => store.readStored(db, storedKey),
+        writeLocal: async (bytes) => {
+          await files.writeCompanyDocument(root, name, bytes, storedExtension(key))
+        },
+      })
+      if (!delivered) return null
+      file = await files.localCompanyDocumentPath(root, name)
+    }
+    if (!file) return null
+    return new Uint8Array(await readFile(file))
+  } catch {
+    return null
   }
 }
 
