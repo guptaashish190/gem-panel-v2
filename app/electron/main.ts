@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { readFileSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -7,7 +8,16 @@ import { createLister, searchKeyword } from './gem.js'
 import * as files from './files.js'
 import { parsePdf } from './parse.js'
 import * as store from './store.js'
-import { GEM_PDF_NAME, UNREACHABLE, type ListFilters, type ListScreen } from './types.js'
+import { PLACEHOLDERS, renderTemplateDocument } from './template.js'
+import {
+  GEM_PDF_NAME,
+  isTenderStatus,
+  UNREACHABLE,
+  type CompanyFields,
+  type ListFilters,
+  type ListScreen,
+  type TemplateDownload,
+} from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -94,6 +104,31 @@ function contentType(extension: string): string {
   return 'application/octet-stream'
 }
 
+function notifyRows(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('tender-row')
+  }
+}
+
+function windowWebPreferences() {
+  return {
+    preload: path.join(__dirname, 'preload.cjs'),
+    contextIsolation: true,
+    nodeIntegration: false,
+  }
+}
+
+function loadApp(win: BrowserWindow, bidNumber?: string): void {
+  const devUrl = process.env.VITE_DEV_SERVER_URL
+  if (devUrl) {
+    const url = new URL(devUrl)
+    if (bidNumber) url.searchParams.set('bid', bidNumber)
+    void win.loadURL(url.toString())
+    return
+  }
+  void win.loadFile(path.join(__dirname, '../dist/index.html'), bidNumber ? { query: { bid: bidNumber } } : undefined)
+}
+
 function register(): void {
   ipcMain.handle('reachable', () => {
     if (!records()) return { ok: false as const, message: UNREACHABLE }
@@ -103,13 +138,18 @@ function register(): void {
   ipcMain.handle('list', async (_event, screen: unknown, filters: unknown) => {
     const db = records()
     if (!db) return []
-    return store.listTenders(db, screenOf(screen), filtersOf(filters))
+    return store.listTenders(db, dataRoot(), screenOf(screen), filtersOf(filters))
   })
 
-  ipcMain.handle('fetch', (event: IpcMainInvokeEvent, keyword: unknown, pages: unknown) => {
+  ipcMain.handle('fetch', (event: IpcMainInvokeEvent, keyword: unknown, pages: unknown, mode: unknown) => {
     const db = records()
     const trimmed = typeof keyword === 'string' ? keyword.trim() : ''
-    const pageCount = typeof pages === 'number' && Number.isFinite(pages) ? Math.max(1, Math.floor(pages)) : 1
+    const next = mode === 'next'
+    const pageCount = next
+      ? 1
+      : typeof pages === 'number' && Number.isFinite(pages)
+        ? Math.max(1, Math.floor(pages))
+        : 1
     if (!db || !trimmed) return { started: false }
     const sender = event.sender
     fetchesRunning += 1
@@ -130,9 +170,13 @@ function register(): void {
             onRow: () => {
               if (!sender.isDestroyed()) sender.send('tender-row')
             },
+            onProgress: (event) => {
+              if (!sender.isDestroyed()) sender.send('fetch-progress', event)
+            },
           },
           trimmed,
           pageCount,
+          next ? 'next' : 'slate',
         ),
       )
       .catch(() => undefined)
@@ -149,6 +193,12 @@ function register(): void {
     return store.openTender(db, dataRoot(), bidNumber)
   })
 
+  ipcMain.handle('open-window', (_event, bidNumber: unknown) => {
+    if (typeof bidNumber !== 'string' || !bidNumber.trim()) return false
+    createDetailWindow(bidNumber)
+    return true
+  })
+
   ipcMain.handle('save', async (_event, bidNumber: unknown) => {
     const db = records()
     if (!db || typeof bidNumber !== 'string') return false
@@ -158,6 +208,7 @@ function register(): void {
       const key = `${files.bidDirName(bidNumber)}/gem.pdf`
       void store.uploadStored(db, bidNumber, GEM_PDF_NAME, key, bytes, 'application/pdf').catch(() => undefined)
     }
+    notifyRows()
     return true
   })
 
@@ -168,13 +219,28 @@ function register(): void {
       setSaved: (bid, saved) => store.setSaved(db, bid, saved),
       savedBidNumbers: () => store.savedBidNumbers(db),
     })
+    notifyRows()
     return true
   })
 
-  ipcMain.handle('mark-filled', async (_event, bidNumber: unknown) => {
+  ipcMain.handle('delete-tender', async (_event, bidNumber: unknown) => {
     const db = records()
     if (!db || typeof bidNumber !== 'string') return false
-    await store.setFilled(db, bidNumber)
+    try {
+      await store.deleteTender(db, bidNumber)
+      await files.removeBidDir(dataRoot(), bidNumber)
+      notifyRows()
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('set-status', async (_event, bidNumber: unknown, status: unknown) => {
+    const db = records()
+    if (!db || typeof bidNumber !== 'string' || (status !== null && !isTenderStatus(status))) return false
+    await store.setStatus(db, bidNumber, status)
+    notifyRows()
     return true
   })
 
@@ -189,10 +255,18 @@ function register(): void {
     try {
       await store.uploadStored(db, bidNumber, name, key, bytes, contentType(extension))
       await files.writeDocument(dataRoot(), bidNumber, name, bytes, extension)
+      notifyRows()
       return true
     } catch {
       return false
     }
+  })
+
+  ipcMain.handle('open-local', async (_event, bidNumber: unknown, name: unknown) => {
+    if (typeof bidNumber !== 'string' || typeof name !== 'string') return false
+    const file = await files.localDocumentPath(dataRoot(), bidNumber, name)
+    if (!file) return false
+    return (await shell.openPath(file)) === ''
   })
 
   ipcMain.handle('download', async (_event, bidNumber: unknown, name: unknown) => {
@@ -208,6 +282,225 @@ function register(): void {
       downloadFromGem: () => Promise.reject(new Error('missing')),
     })
   })
+
+  ipcMain.handle('company', async () => {
+    const db = records()
+    if (!db) return null
+    try {
+      return await store.loadCompany(db, dataRoot())
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('save-company', async (_event, fields: unknown) => {
+    const db = records()
+    const next = companyFieldsOf(fields)
+    if (!db || !next) return false
+    try {
+      await store.saveCompany(db, next)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('add-company-document', async (_event, name: unknown) => {
+    const db = records()
+    if (!db || typeof name !== 'string') return false
+    try {
+      return await store.addCompanyDocument(db, name)
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('remove-company-document', async (_event, name: unknown) => {
+    const db = records()
+    if (!db || typeof name !== 'string' || !name.trim()) return false
+    try {
+      await store.removeCompanyDocument(db, name)
+      await files.removeCompanyDocumentFiles(dataRoot(), name)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('upload-company-document', async (_event, name: unknown, data: unknown, filename: unknown) => {
+    const db = records()
+    if (!db || typeof name !== 'string' || !name.trim()) return false
+    const bytes = data instanceof Uint8Array ? data : null
+    if (!bytes) return false
+    const extension = extensionOf(filename)
+    const storedName = extension ? `${files.documentFileName(name)}${extension}` : files.documentFileName(name)
+    const key = `company/${storedName}`
+    try {
+      await store.uploadCompanyStored(db, name, key, bytes, contentType(extension))
+      await files.writeCompanyDocument(dataRoot(), name, bytes, extension)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('open-company-document', async (_event, name: unknown) => {
+    if (typeof name !== 'string') return false
+    const file = await files.localCompanyDocumentPath(dataRoot(), name)
+    if (!file) return false
+    return (await shell.openPath(file)) === ''
+  })
+
+  ipcMain.handle('templates', async () => {
+    const db = records()
+    if (!db) return null
+    try {
+      return await store.listTemplates(db)
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('template-placeholders', () => PLACEHOLDERS)
+
+  ipcMain.handle('preview-template-text', (_event, body: unknown) => {
+    if (typeof body !== 'string') return null
+    try {
+      return renderTemplateDocument(body, {})
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('save-template', async (_event, fields: unknown) => {
+    const db = records()
+    const next = templateInputOf(fields)
+    if (!db || !next) return false
+    try {
+      return await store.saveTemplate(db, next)
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('remove-template', async (_event, id: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    if (!db || templateId == null) return false
+    try {
+      await store.removeTemplate(db, templateId)
+      return true
+    } catch {
+      return false
+    }
+  })
+
+  ipcMain.handle('preview-template', async (_event, id: unknown, bidNumber: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    if (!db || templateId == null || typeof bidNumber !== 'string') return null
+    try {
+      return await store.previewTemplate(db, dataRoot(), templateId, bidNumber)
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('download-template', async (event, id: unknown, bidNumber: unknown, values: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    const checked = templateValuesOf(values)
+    if (!db || templateId == null || typeof bidNumber !== 'string' || !checked) return 'failed' satisfies TemplateDownload
+    try {
+      const template = await store.templateById(db, templateId)
+      if (!template) return 'failed' satisfies TemplateDownload
+      const document = renderTemplateDocument(template.body, checked)
+      const win = BrowserWindow.fromWebContents(event.sender)
+      const options = {
+        defaultPath: templateFileName(template.name, bidNumber),
+        filters: [{ name: 'Word', extensions: ['doc'] }],
+      }
+      const picked = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+      if (picked.canceled || !picked.filePath) return 'cancelled' satisfies TemplateDownload
+      const filePath = /\.doc$/i.test(picked.filePath) ? picked.filePath : `${picked.filePath}.doc`
+      await writeFile(filePath, document, 'utf8')
+      return 'saved' satisfies TemplateDownload
+    } catch {
+      return 'failed' satisfies TemplateDownload
+    }
+  })
+
+  ipcMain.handle('download-company-document', async (_event, name: unknown) => {
+    const db = records()
+    if (!db || typeof name !== 'string') return false
+    const key = await store.companyStorageKey(db, name).catch(() => null)
+    const extension = storedExtension(key)
+    return files.deliverMissingFile({
+      storedKey: key,
+      readStored: (storedKey) => store.readStored(db, storedKey),
+      writeLocal: async (bytes) => {
+        await files.writeCompanyDocument(dataRoot(), name, bytes, extension)
+      },
+      downloadFromGem: () => Promise.reject(new Error('missing')),
+    })
+  })
+}
+
+function companyFieldsOf(value: unknown): CompanyFields | null {
+  if (!value || typeof value !== 'object') return null
+  const fields = value as Record<string, unknown>
+  if (
+    typeof fields.name !== 'string' ||
+    typeof fields.signatory !== 'string' ||
+    typeof fields.address !== 'string' ||
+    typeof fields.drugLicenseNumber !== 'string'
+  ) {
+    return null
+  }
+  return {
+    name: fields.name.trim(),
+    signatory: fields.signatory.trim(),
+    address: fields.address.trim(),
+    drugLicenseNumber: fields.drugLicenseNumber.trim(),
+  }
+}
+
+function storedExtension(key: string | null): string {
+  if (!key) return ''
+  const extension = path.extname(key).toLowerCase()
+  return /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : ''
+}
+
+function idOf(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) return null
+  return value
+}
+
+function templateInputOf(value: unknown): { id: number | null; name: string; body: string } | null {
+  if (!value || typeof value !== 'object') return null
+  const fields = value as Record<string, unknown>
+  if (typeof fields.name !== 'string' || typeof fields.body !== 'string') return null
+  if (fields.id != null && idOf(fields.id) == null) return null
+  return {
+    id: fields.id == null ? null : idOf(fields.id),
+    name: fields.name,
+    body: fields.body,
+  }
+}
+
+function templateValuesOf(value: unknown): Record<string, string> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const result: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key) || typeof item !== 'string') return null
+    result[key] = item
+  }
+  return result
+}
+
+function templateFileName(name: string, bidNumber: string): string {
+  const cleaned = `${name} ${bidNumber}`.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
+  return `${cleaned || 'template'}.doc`
 }
 
 function createWindow(): void {
@@ -216,21 +509,64 @@ function createWindow(): void {
     height: 820,
     minWidth: 860,
     minHeight: 560,
+    backgroundColor: '#ffffff',
     title: 'GeM Tender Panel',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    show: false,
+    webPreferences: windowWebPreferences(),
   })
-  const devUrl = process.env.VITE_DEV_SERVER_URL
-  if (devUrl) void win.loadURL(devUrl)
-  else void win.loadFile(path.join(__dirname, '../dist/index.html'))
+  win.once('ready-to-show', () => {
+    win.maximize()
+    win.show()
+  })
+  loadApp(win)
+}
+
+function createDetailWindow(bidNumber: string): void {
+  const win = new BrowserWindow({
+    width: 980,
+    height: 820,
+    minWidth: 720,
+    minHeight: 560,
+    backgroundColor: '#ffffff',
+    title: bidNumber,
+    show: false,
+    webPreferences: windowWebPreferences(),
+  })
+  win.once('ready-to-show', () => {
+    win.show()
+  })
+  loadApp(win, bidNumber)
+}
+
+async function repairParsed(): Promise<void> {
+  const db = records()
+  if (!db) return
+  const [missingEval, needingProducts] = await Promise.all([
+    store.bidsMissingEvaluation(db).catch(() => [] as string[]),
+    store.bidsNeedingProducts(db).catch(() => [] as string[]),
+  ])
+  const bids = [...new Set([...missingEval, ...needingProducts])]
+  let changed = false
+  for (const bid of bids) {
+    const bytes = await files.readGemPdf(dataRoot(), bid)
+    if (!bytes) continue
+    try {
+      const parsed = await parsePdf(bytes)
+      if (!parsed.evaluationMethod && parsed.products.length === 0 && parsed.mse == null && parsed.emdAmount == null) continue
+      await store.fillParsed(db, bid, parsed)
+      changed = true
+    } catch {
+      // leave the row; a later open still has the file
+    }
+  }
+  if (!changed) return
+  notifyRows()
 }
 
 app.whenReady().then(() => {
   register()
   createWindow()
+  void repairParsed()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

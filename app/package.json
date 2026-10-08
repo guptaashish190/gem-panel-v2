@@ -9,10 +9,11 @@
     "build": "tsc -p tsconfig.electron.json && vite build",
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
-    "test": "tsc -p tsconfig.electron.json && node --test dist-electron/gem.test.js dist-electron/parse.test.js"
+    "test": "tsc -p tsconfig.electron.json && node --test dist-electron/gem.test.js dist-electron/parse.test.js dist-electron/template.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.117.3",
+    "marked": "^15.0.12",
     "pdfjs-dist": "6.4.299",
     "react": "19.3.0",
     "react-dom": "19.3.0"

@@ -1,12 +1,35 @@
 import { UNSAVED_CAP } from './files.js'
-import type { ListingHit, ParsedTender, TenderInsert, TenderSummary } from './types.js'
+import type { FetchProgress, ListingHit, ParsedTender, TenderInsert, TenderSummary } from './types.js'
 
 const BASE = 'https://bidplus.gem.gov.in'
+
+export type ListingPage = {
+  hits: ListingHit[]
+  last: boolean
+}
+
+function pageOf(value: ListingHit[] | ListingPage): ListingPage {
+  if (Array.isArray(value)) return { hits: value, last: false }
+  return value
+}
+
+function countOf(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  return null
+}
+
+function isLastListing(found: unknown, start: unknown, docCount: number): boolean {
+  if (docCount === 0) return true
+  const total = countOf(found)
+  const offset = countOf(start)
+  if (total == null || offset == null) return false
+  return offset + docCount >= total
+}
 
 export type SearchDeps = {
   pagesSearched: (keyword: string) => Promise<number>
   setPagesSearched: (keyword: string, pages: number) => Promise<void>
-  listPage: (keyword: string, page: number) => Promise<ListingHit[]>
+  listPage: (keyword: string, page: number) => Promise<ListingHit[] | ListingPage>
   downloadPdf: (listingId: string) => Promise<Uint8Array>
   hasBid: (bidNumber: string) => Promise<boolean>
   unsavedCount: () => Promise<number>
@@ -15,6 +38,7 @@ export type SearchDeps = {
   parsePdf: (bytes: Uint8Array) => Promise<ParsedTender>
   insertTender: (row: TenderInsert) => Promise<void>
   onRow?: (row: TenderSummary) => void
+  onProgress?: (event: FetchProgress) => void
   cap?: number
 }
 
@@ -63,7 +87,7 @@ export function createLister(fetchImpl: typeof fetch = fetch, base = BASE) {
   }
 
   return {
-    async listPage(keyword: string, page: number): Promise<ListingHit[]> {
+    async listPage(keyword: string, page: number): Promise<ListingPage> {
       if (!cookies.get('csrf_gem_cookie')) {
         const home = await request(`${base}/all-bids`)
         if (!home.ok) throw new Error(`listing page HTTP ${home.status}`)
@@ -98,11 +122,12 @@ export function createLister(fetchImpl: typeof fetch = fetch, base = BASE) {
       if (!response.ok) throw new Error(`listing HTTP ${response.status}`)
       const json = (await response.json()) as {
         code?: number
-        response?: { response?: { docs?: Record<string, unknown>[] } }
+        response?: { response?: { numFound?: unknown; start?: unknown; docs?: Record<string, unknown>[] } }
       }
       if (json.code != null && json.code !== 200) throw new Error(`listing code ${json.code}`)
+      const docs = json.response?.response?.docs ?? []
       const hits: ListingHit[] = []
-      for (const doc of json.response?.response?.docs ?? []) {
+      for (const doc of docs) {
         const bidNumber = asText(doc.b_bid_number)
         const listingId = asText(doc.b_id)
         if (!bidNumber || !listingId) continue
@@ -114,7 +139,10 @@ export function createLister(fetchImpl: typeof fetch = fetch, base = BASE) {
           department: asText(doc.ba_official_details_deptName),
         })
       }
-      return hits
+      return {
+        hits,
+        last: isLastListing(json.response?.response?.numFound, json.response?.response?.start, docs.length),
+      }
     },
 
     async downloadPdf(listingId: string): Promise<Uint8Array> {
@@ -132,30 +160,49 @@ type Slots = {
   release: () => void
 }
 
+function reportBid(deps: SearchDeps, hit: ListingHit, status: 'downloading' | 'analyzing' | 'downloaded' | 'failed'): void {
+  deps.onProgress?.({
+    kind: 'bid',
+    bidNumber: hit.bidNumber,
+    bidEnd: hit.bidEnd,
+    ministryOrState: hit.ministry,
+    department: hit.department,
+    status,
+  })
+}
+
 async function ingestOne(deps: SearchDeps, hit: ListingHit, slots: Slots): Promise<'done' | 'retry'> {
   if (!hit.bidNumber || !hit.listingId) return 'done'
-  if (await deps.hasBid(hit.bidNumber)) return 'done'
+  if (await deps.hasBid(hit.bidNumber)) {
+    reportBid(deps, hit, 'downloaded')
+    return 'done'
+  }
   if (!slots.take()) return 'retry'
+  reportBid(deps, hit, 'downloading')
   let bytes: Uint8Array
   try {
     bytes = await deps.downloadPdf(hit.listingId)
   } catch {
     slots.release()
-    return 'retry'
+    reportBid(deps, hit, 'failed')
+    return 'done'
   }
   try {
     await deps.savePdf(hit.bidNumber, bytes)
   } catch {
     slots.release()
-    return 'retry'
+    reportBid(deps, hit, 'failed')
+    return 'done'
   }
+  reportBid(deps, hit, 'analyzing')
   let parsed: Awaited<ReturnType<SearchDeps['parsePdf']>>
   try {
     parsed = await deps.parsePdf(bytes)
   } catch {
     await deps.removePdf(hit.bidNumber)
     slots.release()
-    return 'retry'
+    reportBid(deps, hit, 'failed')
+    return 'done'
   }
   const row: TenderInsert = {
     ...parsed,
@@ -170,7 +217,8 @@ async function ingestOne(deps: SearchDeps, hit: ListingHit, slots: Slots): Promi
   } catch {
     await deps.removePdf(hit.bidNumber)
     slots.release()
-    return 'retry'
+    reportBid(deps, hit, 'failed')
+    return 'done'
   }
   deps.onRow?.({
     bidNumber: row.bidNumber,
@@ -178,15 +226,32 @@ async function ingestOne(deps: SearchDeps, hit: ListingHit, slots: Slots): Promi
     ministryOrState: row.ministryOrState,
     department: row.department,
     evaluationMethod: row.evaluationMethod,
+    mse: row.mse,
+    l1PlusPercent: row.l1PlusPercent,
+    quantityPercent: row.quantityPercent,
+    emdRequired: row.emdRequired,
+    emdAmount: row.emdAmount,
+    productCount: row.products.length,
+    productNames: row.products.map((product) => product.name),
+    pdf: 'ready',
     saved: false,
-    filled: false,
+    status: null,
     uploadedFiles: [],
   })
+  reportBid(deps, hit, 'downloaded')
   return 'done'
 }
 
-export async function searchKeyword(deps: SearchDeps, keyword: string, pageCount: number): Promise<void> {
-  const start = (await deps.pagesSearched(keyword)) + 1
+export async function searchKeyword(
+  deps: SearchDeps,
+  keyword: string,
+  pageCount: number,
+  mode: 'slate' | 'next' = 'slate',
+): Promise<void> {
+  const next = mode === 'next'
+  deps.onProgress?.({ kind: 'phase', phase: 'fetching', replace: !next })
+  const count = next ? 1 : pageCount
+  const start = next ? (await deps.pagesSearched(keyword)) + 1 : 1
   const cap = deps.cap ?? UNSAVED_CAP
   let slotsLeft = cap - (await deps.unsavedCount())
   const slots: Slots = {
@@ -228,19 +293,30 @@ export async function searchKeyword(deps: SearchDeps, keyword: string, pageCount
     }
   })
   let fetched = 0
-  for (let offset = 0; offset < pageCount; offset += 1) {
-    let hits: ListingHit[]
+  let announcedDownload = false
+  let reachedEnd = false
+  for (let offset = 0; offset < count; offset += 1) {
+    let page: ListingPage
     try {
-      hits = await deps.listPage(keyword, start + offset)
+      page = pageOf(await deps.listPage(keyword, start + offset))
     } catch {
       break
     }
     fetched += 1
-    queue.push(...hits)
+    if (!announcedDownload) {
+      deps.onProgress?.({ kind: 'phase', phase: 'downloading' })
+      announcedDownload = true
+    }
+    queue.push(...page.hits)
     wake()
+    if (page.last) {
+      reachedEnd = true
+      break
+    }
   }
   listingDone = true
   wake()
   await Promise.all(workers)
+  deps.onProgress?.({ kind: 'pages', last: reachedEnd })
   if (!retry && fetched > 0) await deps.setPagesSearched(keyword, start + fetched - 1)
 }

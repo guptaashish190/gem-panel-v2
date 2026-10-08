@@ -30,13 +30,37 @@ create table if not exists tender (
   epbg_months integer,
   beneficiary_name text,
   saved boolean not null default false,
-  filled boolean not null default false
+  status text
 );
 
 create index if not exists tender_ministry_or_state_idx on tender (ministry_or_state);
 create index if not exists tender_evaluation_method_idx on tender (evaluation_method);
 create index if not exists tender_mse_idx on tender (mse);
 create index if not exists tender_emd_required_idx on tender (emd_required);
+
+alter table tender add column if not exists status text;
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'tender' and column_name = 'filled'
+  ) then
+    update tender set status = 'Documentation' where filled is true and status is null;
+    alter table tender drop column filled;
+  end if;
+end $$;
+
+alter table tender drop constraint if exists tender_status_check;
+alter table tender add constraint tender_status_check check (
+  status is null
+  or status in (
+    'Documentation',
+    'Bid Participated',
+    'Technically Qualified',
+    'Tender Completed'
+  )
+);
 
 create table if not exists product (
   id bigint generated always as identity primary key,
@@ -58,3 +82,33 @@ create table if not exists document (
 insert into storage.buckets (id, name, public)
 values ('tender-files', 'tender-files', false)
 on conflict (id) do nothing;
+
+create table if not exists company (
+  id integer primary key default 1 check (id = 1),
+  name text not null default '',
+  authorized_signatory text not null default '',
+  address text not null default '',
+  drug_license_number text not null default ''
+);
+
+insert into company (id)
+values (1)
+on conflict (id) do nothing;
+
+create table if not exists company_document (
+  id bigint generated always as identity primary key,
+  name text not null,
+  storage_key text
+);
+
+create unique index if not exists company_document_name_idx on company_document (name);
+create unique index if not exists company_document_name_lower_idx on company_document (lower(name));
+
+create table if not exists template (
+  id bigint generated always as identity primary key,
+  name text not null,
+  body text not null default ''
+);
+
+create unique index if not exists template_name_idx on template (name);
+create unique index if not exists template_name_lower_idx on template (lower(name));

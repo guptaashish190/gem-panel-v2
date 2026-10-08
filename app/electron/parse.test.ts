@@ -65,6 +65,60 @@ test('total-value parse keeps one row per named block and ignores the header qua
   ])
 })
 
+test('labels match when other text precedes them on the line', () => {
+  const parsed = parseBidText(`
+prefix /Bid End Date/Time 08-10-2026 15:00:00
+prefix /Evaluation Method Total value wise evaluation
+prefix /EMD Amount 50000
+prefix /MSE Purchase Preference No
+Experience Criteria,Past Performance
+/Document required
+`)
+  assert.equal(parsed.bidEnd, '08-10-2026 15:00:00')
+  assert.equal(parsed.evaluationMethod, 'Total value wise evaluation')
+  assert.equal(parsed.emdAmount, 50000)
+  assert.equal(parsed.mse, false)
+  assert.deepEqual(parsed.requiredDocumentNames, ['Experience Criteria', 'Past Performance'])
+})
+
+test('specification headings supply the product list when named blocks are absent', () => {
+  const parsed = parseBidText(`
+Evaluation Method Total value wise evaluation
+Generic name of the product
+Batch No.
+Surgical Spirit 5 Litre Can
+/Technical Specifications
+1 Parina R stop Bangalore- 250 30
+Antacid Gel 170 Ml
+Content required for qualifying as Class 1 and Class 2 Local Supplier respectively)
+/Technical Specifications
+20 / 31
+Pantoprazole 40MG
+/Technical Specifications
+1 Second Floor Seminary Hills 915 60
+`)
+  assert.deepEqual(parsed.products, [
+    { name: 'Surgical Spirit 5 Litre Can', quantity: 250, deliveryPeriod: '30 days', scheduleNumber: null },
+    { name: 'Antacid Gel 170 Ml', quantity: null, deliveryPeriod: null, scheduleNumber: null },
+    { name: 'Pantoprazole 40MG', quantity: 915, deliveryPeriod: '60 days', scheduleNumber: null },
+  ])
+})
+
+test('item-wise specification headings keep a schedule number', () => {
+  const parsed = parseBidText(`
+Evaluation Method Item wise evaluation
+Inj Anti Snake Venom
+/Technical Specifications
+1 address line 100 15
+Inj Anti Rabies Vaccine
+/Technical Specifications
+`)
+  assert.deepEqual(parsed.products, [
+    { name: 'Inj Anti Snake Venom', quantity: 100, deliveryPeriod: '15 days', scheduleNumber: 1 },
+    { name: 'Inj Anti Rabies Vaccine', quantity: null, deliveryPeriod: null, scheduleNumber: 2 },
+  ])
+})
+
 test('item-wise parse keeps one row per schedule and allows the same code twice', () => {
   const parsed = parseBidText(`
 Evaluation Method Item wise evaluation

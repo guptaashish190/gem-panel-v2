@@ -44,6 +44,7 @@ const LABELS: { label: string; key: ScalarKey }[] = [
   { label: 'show documents to other bidders', key: 'shown' },
   { label: 'documents required from seller', key: 'documents' },
   { label: 'document required from seller', key: 'documents' },
+  { label: 'document required', key: 'documents' },
   { label: 'mse purchase preference', key: 'mse' },
   { label: 'mii purchase preference', key: 'mii' },
   { label: 'emd amount', key: 'emdAmount' },
@@ -65,8 +66,9 @@ const STOP =
 function matchLabel(line: string): { key: ScalarKey; rest: string } | null {
   const lower = line.toLowerCase()
   for (const { label, key } of ORDERED) {
-    if (!lower.startsWith(label)) continue
-    const rest = line.slice(label.length).replace(/^[\s:–-]+/, '').trim()
+    const at = lower.indexOf(label)
+    if (at < 0) continue
+    const rest = line.slice(at + label.length).replace(/^[\s:–\-/]+/, '').trim()
     return { key, rest }
   }
   return null
@@ -94,8 +96,9 @@ function fieldIn(body: string, labels: string[]): string | null {
     const lower = line.toLowerCase().trim()
     if (lower.startsWith('total quantity')) continue
     for (const label of sorted) {
-      if (!lower.startsWith(label)) continue
-      const rest = line.trim().slice(label.length).replace(/^[\s:–-]+/, '').trim()
+      const at = lower.indexOf(label)
+      if (at < 0) continue
+      const rest = line.trim().slice(at + label.length).replace(/^[\s:–\-/]+/, '').trim()
       if (rest) return rest.split(/\s{2,}/)[0]?.trim() || rest
     }
   }
@@ -124,7 +127,7 @@ function parseItemWise(text: string): ProductRow[] {
 }
 
 function parseTotalValue(text: string): ProductRow[] {
-  const marks = [...text.matchAll(/\b(?:Product Name|Name of the Product)\s*[:\-]?\s*/gi)]
+  const marks = [...text.matchAll(/(?:^|\n|\/)\s*(?:Product Name|Name of the Product)\s*[:\-]?\s*/gi)]
   const rows: ProductRow[] = []
   for (let i = 0; i < marks.length; i += 1) {
     const nameStart = (marks[i].index ?? 0) + marks[i][0].length
@@ -146,6 +149,57 @@ function parseTotalValue(text: string): ProductRow[] {
   return rows
 }
 
+function isSpecHeading(line: string): boolean {
+  const lower = line.toLowerCase()
+  const at = lower.lastIndexOf('technical specifications')
+  if (at < 0) return false
+  if (line.slice(at + 'technical specifications'.length).trim().length > 0) return false
+  return line.slice(0, at).replace(/[^A-Za-z]/g, '').length <= 6
+}
+
+function looksLikeProductName(line: string): boolean {
+  const text = line.trim()
+  if (text.length < 3 || text.length > 140) return false
+  if (/[^\x20-\x7E]/.test(text)) return false
+  if (/^\d+\s*\/\s*\d+$/.test(text)) return false
+  if (/[.?!]$/.test(text)) return false
+  if ((text.match(/[A-Za-z]/g) ?? []).length < 3) return false
+  if (/^(content required|specification document|advisory|view file)\b/i.test(text)) return false
+  if (/local content required/i.test(text)) return false
+  if (/\b(consignee|reporting\/?officer)\b/i.test(text)) return false
+  if (/batch no\b/i.test(text)) return false
+  if ((text.match(/\*/g) ?? []).length >= 4) return false
+  return text.split(/\s+/).length <= 28
+}
+
+function parseSpecificationBlocks(lines: string[]): ProductRow[] {
+  const headings: { name: string; at: number }[] = []
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!isSpecHeading(lines[i])) continue
+    let name: string | null = null
+    for (let j = i - 1; j >= Math.max(0, i - 6); j -= 1) {
+      if (isSpecHeading(lines[j])) break
+      if (!looksLikeProductName(lines[j])) continue
+      name = lines[j].trim()
+      break
+    }
+    if (name) headings.push({ name, at: i })
+  }
+  return headings.map((heading, index) => {
+    const stop = index + 1 < headings.length ? headings[index + 1].at : Math.min(lines.length, heading.at + 25)
+    let quantity: number | null = null
+    let delivery: string | null = null
+    for (let j = heading.at + 1; j < stop; j += 1) {
+      const match = lines[j].match(/(\d[\d,]*)\s+(\d+)\s*$/)
+      if (!match) continue
+      quantity = Number(match[1].replace(/,/g, ''))
+      delivery = `${match[2]} days`
+      break
+    }
+    return { name: heading.name, quantity, deliveryPeriod: delivery, scheduleNumber: null }
+  })
+}
+
 function documentNames(value: string): string[] {
   return value
     .split(/[,;\n]/)
@@ -164,7 +218,24 @@ export function parseBidText(text: string): ParsedTender {
     const matched = matchLabel(lines[i])
     if (!matched || found.has(matched.key)) continue
     let rest = matched.rest
-    if (!rest || matched.key === 'documents' || matched.key === 'payment') {
+    if (matched.key === 'documents' && !rest) {
+      const prior: string[] = []
+      for (let j = i - 1; j >= 0 && prior.length < 4; j -= 1) {
+        const prev = lines[j]
+        if (matchLabel(prev)) break
+        if (/,/.test(prev)) {
+          prior.unshift(prev)
+          continue
+        }
+        if (prior.length === 0 && prev.length < 80) {
+          prior.unshift(prev)
+          continue
+        }
+        break
+      }
+      rest = prior.join(' ')
+    }
+    if (!rest || matched.key === 'payment') {
       const extra: string[] = []
       if (rest && matched.key !== 'documents') extra.push(rest)
       if (matched.key === 'documents' && rest) extra.push(rest)
@@ -187,7 +258,14 @@ export function parseBidText(text: string): ParsedTender {
   const l1 = text.match(/L-?\s*1\s*\+\s*(\d+(?:\.\d+)?)\s*%/i)
   const quantityPercent = text.match(/percentage of\s+(\d+(?:\.\d+)?)\s*%/i)
   const evaluationMethod = found.get('evaluationMethod') ?? null
-  const products = isItemWise(evaluationMethod) ? parseItemWise(text) : parseTotalValue(text)
+  const labeled = isItemWise(evaluationMethod) ? parseItemWise(text) : parseTotalValue(text)
+  const fromSpecs = parseSpecificationBlocks(lines)
+  const products =
+    fromSpecs.length > labeled.length
+      ? fromSpecs.map((row, index) =>
+          isItemWise(evaluationMethod) ? { ...row, scheduleNumber: index + 1 } : row,
+        )
+      : labeled
 
   return {
     bidEnd: found.get('bidEnd') ?? null,

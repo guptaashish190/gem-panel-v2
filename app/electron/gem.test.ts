@@ -77,6 +77,65 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
 }
 
+test('search reports fetching, then downloading, then each bid stage', async () => {
+  const events: string[] = []
+  await searchKeyword(
+    deps({
+      onProgress: (event) => {
+        if (event.kind === 'phase') events.push(event.phase)
+        else if (event.kind === 'bid') events.push(`${event.status}:${event.bidNumber}`)
+      },
+    }),
+    'gloves',
+    1,
+  )
+  assert.deepEqual(events, [
+    'fetching',
+    'downloading',
+    'downloading:GEM/2026/B/1',
+    'analyzing:GEM/2026/B/1',
+    'downloaded:GEM/2026/B/1',
+  ])
+})
+
+test('failed download keeps the bid as failed', async () => {
+  const events: string[] = []
+  await searchKeyword(
+    deps({
+      downloadPdf: async () => {
+        throw new Error('download failed')
+      },
+      onProgress: (event) => {
+        if (event.kind === 'bid') events.push(event.status)
+      },
+    }),
+    'gloves',
+    1,
+  )
+  assert.deepEqual(events, ['downloading', 'failed'])
+})
+
+test('known bid is shown as downloaded and is not downloaded again', async () => {
+  const events: string[] = []
+  let downloads = 0
+  await searchKeyword(
+    deps({
+      hasBid: async () => true,
+      downloadPdf: async () => {
+        downloads += 1
+        return pdfBytes
+      },
+      onProgress: (event) => {
+        if (event.kind === 'bid') events.push(event.status)
+      },
+    }),
+    'gloves',
+    1,
+  )
+  assert.deepEqual(events, ['downloaded'])
+  assert.equal(downloads, 0)
+})
+
 test('known bid is not downloaded', async () => {
   let downloads = 0
   let inserts = 0
@@ -174,7 +233,7 @@ test('failed parse leaves no row', async () => {
   assert.equal(inserts, 0)
 })
 
-test('a failed insert removes the pdf and does not advance the cursor', async () => {
+test('a failed insert removes the pdf and still advances the cursor', async () => {
   let removed = 0
   let cursor = 0
   await searchKeyword(
@@ -194,10 +253,10 @@ test('a failed insert removes the pdf and does not advance the cursor', async ()
     1,
   )
   assert.equal(removed, 1)
-  assert.equal(cursor, 0)
+  assert.equal(cursor, 1)
 })
 
-test('a failed download does not advance the page cursor', async () => {
+test('a failed download still advances the page cursor', async () => {
   let cursor = 0
   await searchKeyword(
     deps({
@@ -212,7 +271,7 @@ test('a failed download does not advance the page cursor', async () => {
     'gloves',
     1,
   )
-  assert.equal(cursor, 0)
+  assert.equal(cursor, 1)
 })
 
 test('cap full skips the download and leaves no row', async () => {
@@ -352,7 +411,48 @@ test('the next listing page is requested while earlier downloads are still runni
   assert.equal(overlapped, true)
 })
 
-test('the next search continues after pages already searched', async () => {
+test('a fetch starts at the first page even when later pages were already searched', async () => {
+  const pages: number[] = []
+  let cursor = 4
+  await searchKeyword(
+    deps({
+      pagesSearched: async () => cursor,
+      setPagesSearched: async (_keyword, count) => {
+        cursor = count
+      },
+      listPage: async (_keyword, page) => {
+        pages.push(page)
+        return []
+      },
+    }),
+    'gloves',
+    3,
+  )
+  assert.deepEqual(pages, [1, 2, 3])
+  assert.equal(cursor, 3)
+})
+
+test('a fetch stops when the listing page is the last one', async () => {
+  const pages: number[] = []
+  const events: boolean[] = []
+  await searchKeyword(
+    deps({
+      listPage: async (_keyword, page) => {
+        pages.push(page)
+        return { hits: [hit(`GEM/2026/B/${page}`, `id${page}`)], last: page === 2 }
+      },
+      onProgress: (event) => {
+        if (event.kind === 'pages') events.push(event.last)
+      },
+    }),
+    'gloves',
+    5,
+  )
+  assert.deepEqual(pages, [1, 2])
+  assert.deepEqual(events, [true])
+})
+
+test('fetch next page reads one page after the cursor', async () => {
   const pages: number[] = []
   let cursor = 4
   await searchKeyword(
@@ -369,8 +469,9 @@ test('the next search continues after pages already searched', async () => {
     }),
     'gloves',
     3,
+    'next',
   )
-  assert.deepEqual(pages, [5, 6])
+  assert.deepEqual(pages, [5])
   assert.equal(cursor, 5)
 })
 
@@ -457,7 +558,7 @@ test('filters show only matching stored rows', () => {
       mse: true,
       emd_required: true,
       saved: true,
-      filled: false,
+      status: null,
     },
     {
       bid_number: 'B',
@@ -466,7 +567,7 @@ test('filters show only matching stored rows', () => {
       mse: false,
       emd_required: false,
       saved: false,
-      filled: true,
+      status: 'Bid Participated',
     },
     {
       bid_number: 'C',
@@ -475,7 +576,7 @@ test('filters show only matching stored rows', () => {
       mse: true,
       emd_required: false,
       saved: true,
-      filled: true,
+      status: 'Tender Completed',
     },
   ]
   const shown = (preds: Predicate[]) =>
@@ -489,7 +590,14 @@ test('filters show only matching stored rows', () => {
 })
 
 test('screen copy does not name records infrastructure', () => {
-  const sources = ['../src/App.tsx', '../src/main.tsx', '../src/app.css'].map((relative) =>
+  const sources = [
+    '../src/App.tsx',
+    '../src/SettingsPanel.tsx',
+    '../src/TemplateDialog.tsx',
+    '../src/TenderWindow.tsx',
+    '../src/main.tsx',
+    '../src/app.css',
+  ].map((relative) =>
     readFileSync(path.join(here, relative), 'utf8'),
   )
   const forbidden = /\b(supabase|machines?|folders?|sync|database|storage)\b/i
@@ -552,10 +660,11 @@ test('listing continues after page one and does not download during that call', 
   }, 'https://bidplus.gem.gov.in')
   const first = await lister.listPage('gloves', 1)
   await lister.listPage('gloves', 2)
-  assert.equal(first[0]?.listingId, '99')
-  assert.equal(first[0]?.bidNumber, 'GEM/2026/B/1')
-  assert.equal(first[0]?.ministry, 'Ministry of Defence')
-  assert.equal(JSON.stringify(first[0]).includes('Leave this out'), false)
+  assert.equal(first.hits[0]?.listingId, '99')
+  assert.equal(first.hits[0]?.bidNumber, 'GEM/2026/B/1')
+  assert.equal(first.hits[0]?.ministry, 'Ministry of Defence')
+  assert.equal(first.last, false)
+  assert.equal(JSON.stringify(first.hits[0]).includes('Leave this out'), false)
   const posts = calls.filter((call) => call.url.endsWith('/all-bids-data'))
   assert.equal(posts.length, 2)
   const pageOne = JSON.parse(new URLSearchParams(posts[0]?.body).get('payload') ?? '{}') as {
@@ -571,6 +680,49 @@ test('listing continues after page one and does not download during that call', 
   assert.equal(pageTwo.page, 2)
   assert.equal(new URLSearchParams(posts[1]?.body).get('csrf_bd_gem_nk'), 'token')
   assert.equal(calls.some((call) => call.url.includes('showbidDocument') || call.url.includes('showradocumentPdf')), false)
+})
+
+test('a listing page that includes the final bid is the last page', async () => {
+  const lister = createLister(async (input, init) => {
+    const url = String(input)
+    if (url.endsWith('/all-bids')) {
+      return new Response('', { headers: { 'set-cookie': 'csrf_gem_cookie=token' } })
+    }
+    const raw = init?.body
+    const body = typeof raw === 'string' ? raw : raw instanceof URLSearchParams ? raw.toString() : ''
+    const payload = JSON.parse(new URLSearchParams(body).get('payload') ?? '{}') as {
+      page?: number
+    }
+    const page = payload.page ?? 1
+    if (page === 1) {
+      return Response.json({
+        code: 200,
+        response: { response: { numFound: 12, start: 0, docs: [{ b_bid_number: 'GEM/2026/B/1', b_id: '1' }] } },
+      })
+    }
+    if (page === 2) {
+      return Response.json({
+        code: 200,
+        response: {
+          response: {
+            numFound: 12,
+            start: 10,
+            docs: [
+              { b_bid_number: 'GEM/2026/B/2', b_id: '2' },
+              { b_bid_number: 'GEM/2026/B/3', b_id: '3' },
+            ],
+          },
+        },
+      })
+    }
+    return Response.json({ code: 200, response: { response: { numFound: 12, start: 20, docs: [] } } })
+  }, 'https://bidplus.gem.gov.in')
+  const first = await lister.listPage('gloves', 1)
+  const second = await lister.listPage('gloves', 2)
+  const third = await lister.listPage('gloves', 3)
+  assert.equal(first.last, false)
+  assert.equal(second.last, true)
+  assert.equal(third.last, true)
 })
 
 test('pdf download tries the bid document and then the alternate', async () => {
@@ -613,6 +765,10 @@ test('list queries filter on the indexed columns', () => {
       calls.push(`ilike ${column} ${value}`)
       return this
     },
+    not(column: string, operator: 'is', value: null) {
+      calls.push(`not ${column} ${operator} ${String(value)}`)
+      return this
+    },
   }
   applyPredicates(
     query,
@@ -630,6 +786,9 @@ test('list queries filter on the indexed columns', () => {
     'eq mse true',
     'eq emd_required false',
   ])
+  calls.length = 0
+  applyPredicates(query, predicates('filled', {}))
+  assert.deepEqual(calls, ['not status is null'])
 })
 
 test('the app package is the spine stack', () => {
