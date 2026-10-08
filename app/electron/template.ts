@@ -10,6 +10,7 @@ export const PLACEHOLDERS: TemplatePlaceholder[] = [
   { key: 'email', label: 'Email' },
   { key: 'phone', label: 'Phone number' },
   { key: 'udyamNumber', label: 'Udyam certificate number' },
+  { key: 'logo', label: 'Company logo' },
   { key: 'bidNumber', label: 'Bid number' },
   { key: 'bidEnd', label: 'Bid end' },
   { key: 'offerValidity', label: 'Offer validity' },
@@ -59,6 +60,13 @@ const TENDER_KEYS: (keyof TemplateTender)[] = [
 export const RESERVED_KEYS: string[] = [
   ...new Set([...PLACEHOLDERS.map((item) => item.key), ...TENDER_KEYS, 'products', 'productRows', 'product']),
 ]
+
+const LOGO_LIMIT = 700_000
+
+export function isLogoData(value: string): boolean {
+  if (value.length === 0 || value.length > LOGO_LIMIT) return false
+  return /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
+}
 
 export function isReservedKey(key: string): boolean {
   const lower = key.toLowerCase()
@@ -240,7 +248,7 @@ function expandPatternRows(body: string, rows: Record<string, string>[] | null, 
       const cells = table.bodyCells.map((cell) =>
         cell.replace(productTokenPattern(), (_raw, key: string) => {
           const id = slots.length
-          slots.push(row[key] ?? '')
+          slots.push(htmlText(row[key] ?? ''))
           return `\uE000${id}\uE001`
         }),
       )
@@ -262,7 +270,7 @@ export function productsLine(products: { name: string; quantity: number | null }
     .join('; ')
 }
 
-export function templateValues(company: CompanyFields, tender: TemplateTender): Record<string, string> {
+export function companyValues(company: CompanyFields): Record<string, string> {
   const custom: Record<string, string> = {}
   for (const field of company.fields) custom[field.key] = field.value
   return {
@@ -275,6 +283,12 @@ export function templateValues(company: CompanyFields, tender: TemplateTender): 
     email: company.email,
     phone: company.phone,
     udyamNumber: company.udyamNumber,
+  }
+}
+
+export function templateValues(company: CompanyFields, tender: TemplateTender): Record<string, string> {
+  return {
+    ...companyValues(company),
     bidNumber: tender.bidNumber,
     bidEnd: tender.bidEnd ?? '',
     offerValidity: tender.offerValidity ?? '',
@@ -297,7 +311,7 @@ export function templateFields(
 ): TemplateField[] {
   const columns = patternColumns(body)
   const fields = templateTokens(body)
-    .filter((key) => columns.length === 0 || key !== 'productRows')
+    .filter((key) => key !== 'logo' && (columns.length === 0 || key !== 'productRows'))
     .map((key) => ({
       key,
       label: labels.get(key) ?? (Object.hasOwn(customLabels, key) ? customLabels[key] : key),
@@ -320,18 +334,29 @@ export function templateFields(
   return fields
 }
 
-export function renderTemplateDocument(body: string, values: Record<string, string>): string {
+function logoImage(logo: string): string {
+  if (!isLogoData(logo)) return ''
+  return `<img src="${logo}" alt="Company logo" height="80" style="height:80px;width:auto">`
+}
+
+export function renderTemplateDocument(body: string, values: Record<string, string>, logo?: string): string {
   const slots: string[] = []
   const parsedRows = Object.hasOwn(values, 'productRows') ? parseProductRows(values.productRows) : null
   const expanded = expandPatternRows(body, parsedRows ? parsedRows.rows : null, slots)
   const source = expanded.replace(tokenPattern(), (raw, key: string) => {
+    if (key === 'logo') {
+      if (typeof logo !== 'string') return raw
+      const id = slots.length
+      slots.push(logoImage(logo))
+      return `\uE000${id}\uE001`
+    }
     if (!Object.hasOwn(values, key)) return raw
     const id = slots.length
-    slots.push(values[key])
+    slots.push(htmlText(values[key]))
     return `\uE000${id}\uE001`
   })
   const html = marked(source, { async: false, gfm: true, breaks: true })
-  const filled = html.replace(/\uE000(\d+)\uE001/g, (_raw, index: string) => htmlText(slots[Number(index)] ?? ''))
+  const filled = html.replace(/\uE000(\d+)\uE001/g, (_raw, index: string) => slots[Number(index)] ?? '')
   return wordDocument(filled.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ''))
 }
 

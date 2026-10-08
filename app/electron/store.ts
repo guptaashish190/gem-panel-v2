@@ -17,7 +17,7 @@ import {
   type TextTemplate,
 } from './types.js'
 import { documentIsLocal, fileAction, localCompanyDocumentPath, localDocumentFileName } from './files.js'
-import { companyFieldLabels, isReservedKey, templateFields, templateValues } from './template.js'
+import { companyFieldLabels, isLogoData, isReservedKey, templateFields, templateValues } from './template.js'
 
 type Query = {
   eq: (column: string, value: string | boolean) => Query
@@ -526,8 +526,23 @@ export async function loadCompany(client: SupabaseClient, root: string): Promise
     email: (row?.email as string | null) ?? '',
     phone: (row?.phone as string | null) ?? '',
     udyamNumber: (row?.udyam_number as string | null) ?? '',
+    logo: storedLogo(row?.logo),
     fields: storedCompanyFields(row?.fields),
     documents,
+  }
+}
+
+export function storedLogo(value: unknown): string {
+  return typeof value === 'string' && isLogoData(value) ? value : ''
+}
+
+export async function companyLogo(client: SupabaseClient): Promise<string> {
+  try {
+    const { data, error } = await client.from('company').select('logo').eq('id', 1).maybeSingle()
+    if (error) return ''
+    return storedLogo(data?.logo)
+  } catch {
+    return ''
   }
 }
 
@@ -560,6 +575,7 @@ export async function saveCompany(client: SupabaseClient, fields: CompanyFields)
       email: fields.email,
       phone: fields.phone,
       udyam_number: fields.udyamNumber,
+      logo: fields.logo,
       fields: fields.fields.map((field) => ({ key: field.key, label: field.label, value: field.value })),
     },
     { onConflict: 'id' },

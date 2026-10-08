@@ -92,6 +92,7 @@ export type CompanyFields = {
   email: string
   phone: string
   udyamNumber: string
+  logo: string
   fields: CompanyField[]
 }
 
@@ -128,6 +129,8 @@ export type TemplatePreview = {
 }
 
 export type TemplateDownload = 'saved' | 'cancelled' | 'failed'
+
+export type TemplatePrint = 'printed' | 'cancelled' | 'failed'
 
 export type MergeSource =
   | { kind: 'company'; name: string }
@@ -186,6 +189,7 @@ export type PanelApi = {
   mergeDocument: (bidNumber: string, documentName: string, sources: MergeSource[]) => Promise<MergeResult>
   mergeDownload: (bidNumber: string, documentName: string, sources: MergeSource[]) => Promise<MergeResult>
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) => Promise<TemplateDownload>
+  printTemplate: (id: number, values: Record<string, string>) => Promise<TemplatePrint>
   onRow: (listener: () => void) => () => void
   onFetchDone: (listener: () => void) => () => void
   onFetchProgress: (listener: (event: FetchProgress) => void) => () => void

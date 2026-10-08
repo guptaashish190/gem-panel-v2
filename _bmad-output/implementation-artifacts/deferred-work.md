@@ -53,3 +53,11 @@
 - source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-custom-company-fields.md`
   summary: Settings add-field refusals (clash, duplicate, no key) are only checked by source-text tests, and `fieldKey`/reserved keys are copied into the renderer.
   evidence: Deleting the `taken.some(...)` check in `SettingsPanel.tsx` still passes; a shared renderer-and-electron module would let one tested function serve both.
+
+- source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-settings-preview-company-values.md`
+  summary: Older specs still say Settings preview leaves company, custom, and logo tokens unfilled.
+  evidence: `spec-custom-company-fields.md` and `spec-company-logo-and-print.md` (frozen blocks) still require leaving those tokens; this change supersedes that behavior but must not edit their frozen intent.
+
+- source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-settings-preview-company-values.md`
+  summary: No automated test covers the `preview-template-text` IPC wiring through `loadCompany`.
+  evidence: Unit tests exercise `companyValues` + `renderTemplateDocument` only; other IPC handlers in main follow the same untested pattern.

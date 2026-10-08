@@ -105,6 +105,21 @@ export function TemplateDialog({
     }
   }
 
+  async function onPrint() {
+    const panel = window.panel
+    if (!panel || busy || templateId == null || !ready) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const result = await panel.printTemplate(templateId, fieldValues())
+      if (result === 'failed') setNotice('Could not print that document.')
+    } catch {
+      setNotice('Could not print that document.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onDownload() {
     const panel = window.panel
     if (!panel || busy || templateId == null || !ready) return
@@ -218,6 +233,9 @@ export function TemplateDialog({
               </button>
               <button type="button" className="btn btn-secondary" disabled={busy || !ready} onClick={() => void onPreview()}>
                 Preview
+              </button>
+              <button type="button" className="btn btn-secondary" disabled={busy || !ready} onClick={() => void onPrint()}>
+                Print
               </button>
               <button type="button" className="btn btn-secondary" disabled={busy || !ready} onClick={() => void onDownload()}>
                 Download

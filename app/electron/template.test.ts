@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { storedCompanyFields } from './store.js'
+import { storedCompanyFields, storedLogo } from './store.js'
 import {
   companyFieldLabels,
+  companyValues,
   customFieldsOf,
   placeholdersFor,
   fieldKey,
@@ -12,6 +13,7 @@ import {
   PLACEHOLDERS,
   productStarterTable,
   productsLine,
+  isLogoData,
   renderTemplateDocument,
   RESERVED_KEYS,
   templateFields,
@@ -19,7 +21,7 @@ import {
   templateValues,
 } from './template.js'
 
-const company = { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', fields: [] }
+const company = { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', logo: '', fields: [] }
 
 function tender(products: { name: string; quantity: number | null }[]) {
   return {
@@ -102,7 +104,7 @@ test('products join name and quantity', () => {
 
 test('known values fill the matching tokens', () => {
   const values = templateValues(
-    { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', fields: [] },
+    { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', logo: '', fields: [] },
     {
       bidNumber: 'GEM/2026/B/1',
       bidEnd: '08-10-2026',
@@ -227,8 +229,23 @@ test('settings derives custom keys the same way as the main process', () => {
   assert.equal(copy, source)
 })
 
-test('settings preview leaves custom tokens', () => {
-  assert.match(renderTemplateDocument('GST {{panNo}}', {}), /\{\{panNo\}\}/)
+test('settings preview fills company and custom values and leaves bid tokens', () => {
+  const withCustom = {
+    ...company,
+    fields: [{ key: 'panNo', label: 'PAN no', value: '06ABC' }],
+  }
+  const document = renderTemplateDocument(
+    '{{companyName}} GST {{gstin}} PAN {{panNo}} Bid {{bidNumber}}',
+    companyValues(withCustom),
+    withCustom.logo,
+  )
+  assert.match(document, /Acme/)
+  assert.match(document, /06GST/)
+  assert.match(document, /06ABC/)
+  assert.match(document, /\{\{bidNumber\}\}/)
+  assert.doesNotMatch(document, /\{\{companyName\}\}/)
+  assert.doesNotMatch(document, /\{\{gstin\}\}/)
+  assert.doesNotMatch(document, /\{\{panNo\}\}/)
 })
 
 test('markdown download keeps bold, tables, and centered html', () => {
@@ -245,7 +262,7 @@ test('markdown download keeps bold, tables, and centered html', () => {
 })
 
 test('preview leaves placeholders when no bid is chosen', () => {
-  const document = renderTemplateDocument('Bid {{bidNumber}}', {})
+  const document = renderTemplateDocument('Bid {{bidNumber}}', companyValues(company), company.logo)
   assert.match(document, /\{\{bidNumber\}\}/)
 })
 
@@ -408,8 +425,87 @@ test('a cell with a pipe or markup stays text inside the table', () => {
 })
 
 test('settings preview leaves product tokens when no bid is chosen', () => {
-  const document = renderTemplateDocument(productStarterTable, {})
+  const document = renderTemplateDocument(productStarterTable, companyValues(company), company.logo)
   assert.match(document, /\{\{product\.name\}\}/)
   assert.match(document, /\{\{product\.offerPrice\}\}/)
   assert.match(document, /\{\{product\.oem\}\}/)
+})
+
+const pngLogo = 'data:image/png;base64,aaaa'
+
+test('a logo renders as an image', () => {
+  const document = renderTemplateDocument('{{logo}}', {}, pngLogo)
+  assert.match(document, /<img src="data:image\/png;base64,aaaa" alt="Company logo" height="80"/)
+})
+
+test('an empty logo removes the token', () => {
+  const document = renderTemplateDocument('X{{logo}}Y', {}, '')
+  assert.match(document, /XY/)
+  assert.doesNotMatch(document, /\{\{logo\}\}/)
+  assert.doesNotMatch(document, /<img/)
+})
+
+test('a forged logo value is ignored', () => {
+  const document = renderTemplateDocument('{{logo}}', { logo: '<script>alert(1)</script>' }, pngLogo)
+  assert.match(document, /<img src="data:image\/png;base64,aaaa"/)
+  assert.doesNotMatch(document, /<script/)
+  assert.equal(Object.hasOwn(templateValues({ ...company, logo: pngLogo }, tender([])), 'logo'), false)
+})
+
+test('a bad stored logo renders nothing', () => {
+  const document = renderTemplateDocument('{{logo}}', {}, 'not-a-logo')
+  assert.doesNotMatch(document, /\{\{logo\}\}/)
+  assert.doesNotMatch(document, /<img/)
+  assert.equal(storedLogo('not-a-logo'), '')
+  assert.equal(storedLogo(undefined), '')
+  assert.equal(storedLogo(pngLogo), pngLogo)
+})
+
+test('settings preview renders the company logo', () => {
+  const withLogo = { ...company, logo: pngLogo }
+  const document = renderTemplateDocument('{{logo}}', companyValues(withLogo), withLogo.logo)
+  assert.match(document, /<img src="data:image\/png;base64,aaaa" alt="Company logo" height="80"/)
+  assert.doesNotMatch(document, /\{\{logo\}\}/)
+})
+
+test('settings preview with no logo removes the token', () => {
+  const document = renderTemplateDocument('X{{logo}}Y', companyValues(company), company.logo)
+  assert.match(document, /XY/)
+  assert.doesNotMatch(document, /\{\{logo\}\}/)
+})
+
+test('logo is not a prepare field', () => {
+  const fields = templateFields('{{logo}} {{companyName}}', { companyName: 'Acme', logo: '<script>' })
+  assert.deepEqual(
+    fields.map((field) => field.key),
+    ['companyName'],
+  )
+})
+
+test('logo data accepts png and jpeg only, within the size cap', () => {
+  assert.equal(isLogoData(pngLogo), true)
+  assert.equal(isLogoData('data:image/jpeg;base64,+/=='), true)
+  assert.equal(isLogoData('data:image/gif;base64,aaaa'), false)
+  assert.equal(isLogoData('data:image/png;base64,<script>'), false)
+  assert.equal(isLogoData(''), false)
+  assert.equal(isLogoData(`data:image/png;base64,${'a'.repeat(700_000)}`), false)
+})
+
+test('settings refuses a logo that is not a small png or jpeg', () => {
+  const settings = readFileSync(new URL('../src/SettingsPanel.tsx', import.meta.url), 'utf8')
+  assert.match(settings, /Use a PNG or JPEG under 500 KB\./)
+  assert.match(settings, /image\/png/)
+  assert.match(settings, /image\/jpeg/)
+  assert.match(settings, /\.png/)
+  assert.match(settings, /500 \* 1024/)
+  assert.match(settings, /endsWith\('\.png'\)/)
+})
+
+test('print reports failure and stays quiet when cancelled', () => {
+  const dialog = readFileSync(new URL('../src/TemplateDialog.tsx', import.meta.url), 'utf8')
+  assert.match(dialog, />\s*Print\s*</)
+  assert.match(dialog, /Could not print that document\./)
+  const handler = dialog.slice(dialog.indexOf('async function onPrint'), dialog.indexOf('async function onDownload'))
+  assert.match(handler, /result === 'failed'/)
+  assert.doesNotMatch(handler, /cancelled/)
 })

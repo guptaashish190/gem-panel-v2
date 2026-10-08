@@ -96,6 +96,7 @@ alter table company add column if not exists email text not null default '';
 alter table company add column if not exists phone text not null default '';
 alter table company add column if not exists udyam_number text not null default '';
 alter table company add column if not exists fields jsonb not null default '[]'::jsonb;
+alter table company add column if not exists logo text not null default '';
 
 insert into company (id)
 values (1)

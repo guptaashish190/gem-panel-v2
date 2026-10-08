@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('panel', {
     ipcRenderer.invoke('merge-download', bidNumber, documentName, sources),
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) =>
     ipcRenderer.invoke('download-template', id, bidNumber, values),
+  printTemplate: (id: number, values: Record<string, string>) => ipcRenderer.invoke('print-template', id, values),
   onRow: (listener: () => void) => {
     const wrapped = () => listener()
     ipcRenderer.on('tender-row', wrapped)

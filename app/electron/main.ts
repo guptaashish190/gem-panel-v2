@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { readFileSync } from 'node:fs'
-import { copyFile, readFile, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
+import { copyFile, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -9,7 +10,14 @@ import * as files from './files.js'
 import { parsePdf } from './parse.js'
 import * as store from './store.js'
 import { mergeNamedPdfs, pdfDownloadName } from './merge.js'
-import { customFieldsOf, PLACEHOLDERS, placeholdersFor, renderTemplateDocument } from './template.js'
+import {
+  companyValues,
+  customFieldsOf,
+  isLogoData,
+  PLACEHOLDERS,
+  placeholdersFor,
+  renderTemplateDocument,
+} from './template.js'
 import {
   GEM_PDF_NAME,
   isTenderStatus,
@@ -18,6 +26,7 @@ import {
   type ListFilters,
   type ListScreen,
   type TemplateDownload,
+  type TemplatePrint,
 } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -397,12 +406,19 @@ function register(): void {
     }
   })
 
-  ipcMain.handle('preview-template-text', (_event, body: unknown) => {
+  ipcMain.handle('preview-template-text', async (_event, body: unknown) => {
     if (typeof body !== 'string') return null
     try {
-      return renderTemplateDocument(body, {})
+      const db = records()
+      if (!db) return renderTemplateDocument(body, {})
+      const company = await store.loadCompany(db, dataRoot())
+      return renderTemplateDocument(body, companyValues(company), company.logo)
     } catch {
-      return null
+      try {
+        return renderTemplateDocument(body, {})
+      } catch {
+        return null
+      }
     }
   })
 
@@ -448,7 +464,7 @@ function register(): void {
     try {
       const template = await store.templateById(db, templateId)
       if (!template) return null
-      return renderTemplateDocument(template.body, checked)
+      return renderTemplateDocument(template.body, checked, await store.companyLogo(db))
     } catch {
       return null
     }
@@ -472,7 +488,7 @@ function register(): void {
     try {
       const template = await store.templateById(db, templateId)
       if (!template) return false
-      const document = renderTemplateDocument(template.body, checked)
+      const document = renderTemplateDocument(template.body, checked, await store.companyLogo(db))
       const bytes = new Uint8Array(Buffer.from(document, 'utf8'))
       const extension = '.doc'
       const storedName = `${files.documentFileName(documentName)}${extension}`
@@ -546,7 +562,7 @@ function register(): void {
     try {
       const template = await store.templateById(db, templateId)
       if (!template) return 'failed' satisfies TemplateDownload
-      const document = renderTemplateDocument(template.body, checked)
+      const document = renderTemplateDocument(template.body, checked, await store.companyLogo(db))
       const win = BrowserWindow.fromWebContents(event.sender)
       const options = {
         defaultPath: templateFileName(template.name, bidNumber),
@@ -559,6 +575,21 @@ function register(): void {
       return 'saved' satisfies TemplateDownload
     } catch {
       return 'failed' satisfies TemplateDownload
+    }
+  })
+
+  ipcMain.handle('print-template', async (_event, id: unknown, values: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    const checked = templateValuesOf(values)
+    if (!db || templateId == null || !checked) return 'failed' satisfies TemplatePrint
+    try {
+      const template = await store.templateById(db, templateId)
+      if (!template) return 'failed' satisfies TemplatePrint
+      const document = renderTemplateDocument(template.body, checked, await store.companyLogo(db))
+      return await printDocument(document)
+    } catch {
+      return 'failed' satisfies TemplatePrint
     }
   })
 
@@ -594,10 +625,13 @@ function companyFieldsOf(value: unknown): CompanyFields | null {
     typeof fields.gstin !== 'string' ||
     typeof fields.email !== 'string' ||
     typeof fields.phone !== 'string' ||
-    typeof fields.udyamNumber !== 'string'
+    typeof fields.udyamNumber !== 'string' ||
+    typeof fields.logo !== 'string'
   ) {
     return null
   }
+  const logo = fields.logo.trim()
+  if (logo && !isLogoData(logo)) return null
   const custom = customFieldsOf(fields.fields)
   if (!custom) return null
   return {
@@ -609,7 +643,32 @@ function companyFieldsOf(value: unknown): CompanyFields | null {
     email: fields.email.trim(),
     phone: fields.phone.trim(),
     udyamNumber: fields.udyamNumber.trim(),
+    logo,
     fields: custom,
+  }
+}
+
+async function printDocument(html: string): Promise<TemplatePrint> {
+  const filePath = path.join(app.getPath('temp'), `gem-print-${randomBytes(8).toString('hex')}.html`)
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { javascript: false },
+  })
+  try {
+    await writeFile(filePath, html, 'utf8')
+    await win.loadFile(filePath)
+    return await new Promise((resolve) => {
+      win.webContents.print({}, (success, failureReason) => {
+        if (success) resolve('printed')
+        else if (/cancel/i.test(failureReason)) resolve('cancelled')
+        else resolve('failed')
+      })
+    })
+  } catch {
+    return 'failed'
+  } finally {
+    if (!win.isDestroyed()) win.close()
+    await unlink(filePath).catch(() => {})
   }
 }
 

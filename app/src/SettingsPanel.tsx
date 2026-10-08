@@ -13,6 +13,7 @@ const RESERVED_KEYS = [
   'email',
   'phone',
   'udyamNumber',
+  'logo',
   'bidNumber',
   'bidEnd',
   'offerValidity',
@@ -51,6 +52,7 @@ export function SettingsPanel() {
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [udyamNumber, setUdyamNumber] = useState('')
+  const [logo, setLogo] = useState('')
   const [customFields, setCustomFields] = useState<CompanyField[]>([])
   const [fieldDraft, setFieldDraft] = useState('')
   const [savedCount, setSavedCount] = useState(0)
@@ -76,6 +78,7 @@ export function SettingsPanel() {
       setEmail(next.email)
       setPhone(next.phone)
       setUdyamNumber(next.udyamNumber)
+      setLogo(next.logo)
       setCustomFields(next.fields)
     }
     setDocuments(next.documents)
@@ -107,6 +110,7 @@ export function SettingsPanel() {
         email,
         phone,
         udyamNumber,
+        logo,
         fields: customFields,
       })
       if (ok) {
@@ -119,6 +123,28 @@ export function SettingsPanel() {
     } finally {
       setBusy(false)
     }
+  }
+
+  function onLogo(file: File | undefined) {
+    if (!file || busy) return
+    const lower = file.name.toLowerCase()
+    const byExt = lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+    const byType = file.type === 'image/png' || file.type === 'image/jpeg'
+    if ((!byType && !byExt) || file.size > 500 * 1024) {
+      setNotice('Use a PNG or JPEG under 500 KB.')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(result) || result.length > 700_000) {
+        setNotice('Use a PNG or JPEG under 500 KB.')
+        return
+      }
+      setNotice(null)
+      setLogo(result)
+    }
+    reader.readAsDataURL(file)
   }
 
   function onAddField() {
@@ -267,6 +293,23 @@ export function SettingsPanel() {
               Phone number
               <input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} />
             </label>
+            <div className="logo-field">
+              Company logo
+              <span className="custom-field-row">
+                {logo ? <img className="logo-preview" src={logo} alt="Company logo" /> : <span>No logo</span>}
+                <FileButton
+                  label={logo ? 'Replace' : 'Upload'}
+                  accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+                  disabled={busy}
+                  onFile={onLogo}
+                />
+                {logo ? (
+                  <button type="button" className="btn btn-ghost btn-remove" disabled={busy} onClick={() => setLogo('')}>
+                    Remove
+                  </button>
+                ) : null}
+              </span>
+            </div>
             {customFields.map((field) => (
               <label key={field.key} className="wide">
                 {field.label}
@@ -434,10 +477,12 @@ function FileActions({
 function FileButton({
   label,
   disabled,
+  accept,
   onFile,
 }: {
   label: string
   disabled: boolean
+  accept?: string
   onFile: (file: File | undefined) => void
 }) {
   return (
@@ -445,6 +490,7 @@ function FileButton({
       {label}
       <input
         type="file"
+        accept={accept}
         disabled={disabled}
         onChange={(event) => {
           const file = event.target.files?.[0]

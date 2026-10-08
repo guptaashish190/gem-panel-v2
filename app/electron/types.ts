@@ -115,6 +115,7 @@ export type CompanyFields = {
   email: string
   phone: string
   udyamNumber: string
+  logo: string
   fields: CompanyField[]
 }
 
@@ -151,6 +152,8 @@ export type TemplatePreview = {
 }
 
 export type TemplateDownload = 'saved' | 'cancelled' | 'failed'
+
+export type TemplatePrint = 'printed' | 'cancelled' | 'failed'
 
 export const UNREACHABLE = 'the panel cannot reach its records'
 export const FILE_BUCKET = 'tender-files'
