@@ -353,6 +353,52 @@ label.btn { position: relative; overflow: hidden; cursor: pointer; }
 
 .table-scroll { overflow-x: auto; }
 
+.product-grid {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.product-grid-label {
+  color: #8a8a8a;
+  font-size: 12px;
+}
+
+.product-grid .table-scroll { min-width: 0; }
+
+.product-grid table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.product-grid th,
+.product-grid td {
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.product-grid .product-row-action {
+  width: 2.5rem;
+  padding-right: 4px;
+  white-space: nowrap;
+}
+
+.product-grid .product-col-short {
+  width: 6.5rem;
+}
+
+.product-grid input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.product-grid tbody tr,
+.product-grid tbody tr:hover td { cursor: default; }
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -727,12 +773,20 @@ label.btn.is-disabled {
 
 .modal-form { padding: 0; }
 
+.modal.preview-modal {
+  width: min(900px, 100%);
+  max-height: calc(100vh - 48px);
+}
+
+.modal-back:has(.preview-modal) { padding: 24px 16px; }
+
 .template-preview {
+  display: block;
   width: 100%;
-  height: min(480px, 60vh);
+  height: calc(100vh - 170px);
   border: 1px solid #e8e8e8;
   border-radius: 8px;
-  background: #fff;
+  background: #e5e7eb;
 }
 
 .modal .settings-actions { margin-top: 12px; }

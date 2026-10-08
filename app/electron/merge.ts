@@ -37,6 +37,17 @@ async function appendPdf(merged: PDFDocument, bytes: Uint8Array): Promise<void> 
 export async function mergeNamedPdfs(
   parts: { name: string; bytes: Uint8Array }[],
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; message: string }> {
+  if (parts.length === 1) {
+    const [only] = parts
+    if (!isPdf(only.bytes)) return { ok: false, message: `${only.name} is not a PDF.` }
+    try {
+      const doc = await PDFDocument.load(only.bytes, { ignoreEncryption: true })
+      if (doc.getPageCount() === 0) throw new Error('no pages')
+    } catch {
+      return { ok: false, message: `${only.name} could not be read.` }
+    }
+    return { ok: true, bytes: only.bytes }
+  }
   const merged = await PDFDocument.create()
   for (const part of parts) {
     if (!isPdf(part.bytes)) return { ok: false, message: `${part.name} is not a PDF.` }

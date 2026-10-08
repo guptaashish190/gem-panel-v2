@@ -46,6 +46,7 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
   const [blocked, setBlocked] = useState<string | null>(null)
   const [missing, setMissing] = useState(false)
   const [templateFor, setTemplateFor] = useState<string | null>(null)
+  const [reanalyze, setReanalyze] = useState<'idle' | 'running' | 'failed'>('idle')
   const request = useRef(0)
 
   const reload = useCallback(async () => {
@@ -87,6 +88,9 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
   return (
     <div className="app">
       {blocked ? <p className="banner">{blocked}</p> : null}
+      {reanalyze === 'failed' ? (
+        <p className="banner">Could not reanalyze: the GeM PDF for this tender is not available or could not be read.</p>
+      ) : null}
       <article className="screen">
         <div className="detail-bar">
           <button type="button" className="btn btn-ghost" onClick={() => window.close()}>
@@ -112,6 +116,24 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
               }}
             >
               Open PDF
+            </button>
+          ) : null}
+          {detail ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={reanalyze === 'running'}
+              onClick={() => {
+                const panel = window.panel
+                if (!panel) return
+                setReanalyze('running')
+                void panel.reanalyze(detail.bidNumber).then((ok) => {
+                  setReanalyze(ok ? 'idle' : 'failed')
+                  if (ok) void reload()
+                })
+              }}
+            >
+              {reanalyze === 'running' ? 'Reanalyzing…' : 'Reanalyze'}
             </button>
           ) : null}
           {detail ? (

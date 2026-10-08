@@ -47,6 +47,7 @@ export function PdfMerge({
 
   const hasCompany = rows.some((row) => row.kind === 'company')
   const hasUpload = rows.some((row) => row.kind === 'upload')
+  const single = rows.length === 1
 
   async function onPick(files: File[]) {
     if (files.length === 0 || busy) return
@@ -93,7 +94,7 @@ export function PdfMerge({
 
   function mergeNotice(result: Awaited<ReturnType<NonNullable<typeof window.panel>['mergeDocument']>> | undefined): string {
     if (result && !result.ok && 'message' in result) return result.message
-    return 'Could not merge those PDFs.'
+    return single ? 'Could not save that PDF.' : 'Could not merge those PDFs.'
   }
 
   async function onMerge() {
@@ -107,7 +108,7 @@ export function PdfMerge({
       else if (result && !result.ok && 'cancelled' in result) return
       else setNotice(mergeNotice(result))
     } catch {
-      setNotice('Could not merge those PDFs.')
+      setNotice(single ? 'Could not save that PDF.' : 'Could not merge those PDFs.')
     } finally {
       setBusy(false)
     }
@@ -239,10 +240,10 @@ export function PdfMerge({
           Close
         </button>
         <button type="button" className="btn btn-secondary" disabled={busy || rows.length === 0} onClick={() => void onDownload()}>
-          Merge and download
+          {single ? 'Download' : 'Merge and download'}
         </button>
         <button type="button" className="btn btn-primary" disabled={busy || rows.length === 0} onClick={() => void onMerge()}>
-          Merge and save
+          {single ? 'Save PDF' : 'Merge and save'}
         </button>
       </div>
     </div>

@@ -22,6 +22,8 @@ type ScalarKey =
   | 'epbgPercentage'
   | 'epbgMonths'
   | 'beneficiaryName'
+  | 'mseL1'
+  | 'mseQuantity'
 
 const LABELS: { label: string; key: ScalarKey }[] = [
   { label: 'bid end date/time', key: 'bidEnd' },
@@ -41,6 +43,9 @@ const LABELS: { label: string; key: ScalarKey }[] = [
   { label: 'payment timelines', key: 'payment' },
   { label: 'payment timeline', key: 'payment' },
   { label: 'whether documents uploaded by bidders are shown to other bidders', key: 'shown' },
+  { label: 'documents uploaded by bidders to all bidders', key: 'shown' },
+  { label: 'purchase preference to mse', key: 'mseL1' },
+  { label: 'percentage of bid quantity/amount for mse', key: 'mseQuantity' },
   { label: 'show documents to other bidders', key: 'shown' },
   { label: 'documents required from seller', key: 'documents' },
   { label: 'document required from seller', key: 'documents' },
@@ -56,6 +61,8 @@ const LABELS: { label: string; key: ScalarKey }[] = [
   { label: 'beneficiary name', key: 'beneficiaryName' },
   { label: 'name of the beneficiary', key: 'beneficiaryName' },
   { label: 'name of beneficiary', key: 'beneficiaryName' },
+  { label: 'beneficiary :', key: 'beneficiaryName' },
+  { label: 'beneficiary:', key: 'beneficiaryName' },
 ]
 
 const ORDERED = [...LABELS].sort((a, b) => b.label.length - a.label.length)
@@ -200,53 +207,123 @@ function parseSpecificationBlocks(lines: string[]): ProductRow[] {
   })
 }
 
+export type PdfPiece = { x: number; end: number; text: string }
+export type PdfLine = { text: string; y: number; height: number; page: number; pieces: PdfPiece[] }
+
 function documentNames(value: string): string[] {
-  return value
-    .split(/[,;\n]/)
-    .map((part) => part.replace(/^\s*\d+[\).\]]\s*/, '').trim())
+  return (value.split('*')[0] ?? '')
+    .split(',')
+    .map((part) => part.replace(/\s+/g, ' ').trim())
     .filter((part) => part.length > 0 && part.toLowerCase() !== GEM_PDF_NAME.toLowerCase())
+}
+
+type TableRow = { label: string; value: string }
+
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]
+}
+
+function valueColumn(layout: PdfLine[]): number | null {
+  const starts: number[] = []
+  for (const line of layout) {
+    const label = line.pieces.find((piece) => matchLabel(piece.text))
+    if (!label) continue
+    const value = line.pieces.find((piece) => piece.x > label.end + 8)
+    if (value) starts.push(value.x)
+  }
+  return starts.length ? median(starts) - 10 : null
+}
+
+function tableRows(layout: PdfLine[]): TableRow[] | null {
+  const split = valueColumn(layout)
+  if (split == null) return null
+  const heights = layout.map((line) => line.height).filter((height) => height > 0)
+  const reach = (heights.length ? median(heights) : 9) * 1.6
+  const groups: PdfLine[][] = []
+  for (const line of layout) {
+    const group = groups[groups.length - 1]
+    const last = group?.[group.length - 1]
+    if (last && last.page === line.page && last.y - line.y <= reach) group.push(line)
+    else groups.push([line])
+  }
+  const side = (group: PdfLine[], right: boolean) =>
+    group
+      .flatMap((line) => line.pieces.filter((piece) => (piece.x >= split) === right).map((piece) => piece.text))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  return groups.map((group) => ({ label: side(group, false), value: side(group, true) }))
+}
+
+function fillFromRows(rows: TableRow[], found: Map<ScalarKey, string>): void {
+  for (let r = 0; r < rows.length; r += 1) {
+    const matched = matchLabel(rows[r].label)
+    if (!matched || found.has(matched.key)) continue
+    let value = rows[r].value
+    if (!value && (matched.key === 'emdDetail' || matched.key === 'epbgDetail')) {
+      for (let k = r + 1; k < rows.length && k <= r + 3; k += 1) {
+        if (/(^|[\s/])required\b/i.test(rows[k].label) && rows[k].value) {
+          value = rows[k].value
+          break
+        }
+        if (matchLabel(rows[k].label)) break
+      }
+    }
+    if (!value && matched.key === 'beneficiaryName') value = matched.rest
+    if (value.trim()) found.set(matched.key, value.trim())
+  }
+}
+
+function emailIn(value: string | null): string | null {
+  if (!value) return null
+  return value.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/)?.[0] ?? value
+}
+
+function documentsFromText(lines: string[], at: number, rest: string): string {
+  const parts: string[] = []
+  for (let j = at - 1; j >= 0 && j >= at - 10; j -= 1) {
+    const line = lines[j]
+    if (matchLabel(line) || STOP.test(line) || !line.includes(',') || line.includes('*')) break
+    parts.unshift(line)
+  }
+  parts.push(rest)
+  for (let j = at + 1; j < lines.length && j <= at + 10; j += 1) {
+    if (matchLabel(lines[j]) || STOP.test(lines[j])) break
+    const line = lines[j].replace(/^from seller\b\s*/i, '')
+    parts.push(line)
+    if (line.includes('*')) break
+  }
+  return parts.join(' ')
 }
 
 function isItemWise(method: string | null): boolean {
   return (method ?? '').toLowerCase().includes('item')
 }
 
-export function parseBidText(text: string): ParsedTender {
+export function parseBidText(text: string, layout?: PdfLine[]): ParsedTender {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0)
+  const aligned = layout && layout.length === lines.length ? layout : null
   const found = new Map<ScalarKey, string>()
+  const rows = aligned ? tableRows(aligned) : null
+  if (rows) fillFromRows(rows, found)
   for (let i = 0; i < lines.length; i += 1) {
     const matched = matchLabel(lines[i])
     if (!matched || found.has(matched.key)) continue
     let rest = matched.rest
-    if (matched.key === 'documents' && !rest) {
-      const prior: string[] = []
-      for (let j = i - 1; j >= 0 && prior.length < 4; j -= 1) {
-        const prev = lines[j]
-        if (matchLabel(prev)) break
-        if (/,/.test(prev)) {
-          prior.unshift(prev)
-          continue
-        }
-        if (prior.length === 0 && prev.length < 80) {
-          prior.unshift(prev)
-          continue
-        }
-        break
-      }
-      rest = prior.join(' ')
-    }
-    if (!rest || matched.key === 'payment') {
+    if (matched.key === 'documents') {
+      rest = documentsFromText(lines, i, rest)
+    } else if (!rest || matched.key === 'payment') {
       const extra: string[] = []
-      if (rest && matched.key !== 'documents') extra.push(rest)
-      if (matched.key === 'documents' && rest) extra.push(rest)
+      if (rest) extra.push(rest)
       for (let j = i + 1; j < lines.length; j += 1) {
         if (matchLabel(lines[j]) || STOP.test(lines[j])) break
         extra.push(lines[j])
-        if (matched.key !== 'documents' && matched.key !== 'payment') break
+        if (matched.key !== 'payment') break
       }
-      rest = extra.join(matched.key === 'documents' ? '\n' : ' ').trim()
+      rest = extra.join(' ').trim()
     }
-    if (rest) found.set(matched.key, rest)
+    if (rest.trim()) found.set(matched.key, rest)
   }
 
   const payment = found.get('payment') ?? null
@@ -255,8 +332,10 @@ export function parseBidText(text: string): ParsedTender {
   const emdFlag = yesNo(found.get('emdDetail') ?? null)
   const epbgFlag = yesNo(found.get('epbgDetail') ?? null)
   const epbgPercentage = firstNumber(found.get('epbgPercentage') ?? null)
-  const l1 = text.match(/L-?\s*1\s*\+\s*(\d+(?:\.\d+)?)\s*%/i)
-  const quantityPercent = text.match(/percentage of\s+(\d+(?:\.\d+)?)\s*%/i)
+  const l1Text = text.match(/L-?\s*1\s*\+\s*(\d+(?:\.\d+)?)\s*%/i)
+  const quantityText = text.match(/percentage of\s+(\d+(?:\.\d+)?)\s*%/i)
+  const l1 = firstNumber(found.get('mseL1') ?? null) ?? (l1Text ? Number(l1Text[1]) : null)
+  const quantityPercent = firstNumber(found.get('mseQuantity') ?? null) ?? (quantityText ? Number(quantityText[1]) : null)
   const evaluationMethod = found.get('evaluationMethod') ?? null
   const labeled = isItemWise(evaluationMethod) ? parseItemWise(text) : parseTotalValue(text)
   const fromSpecs = parseSpecificationBlocks(lines)
@@ -272,8 +351,8 @@ export function parseBidText(text: string): ParsedTender {
     offerValidity: found.get('offerValidity') ?? null,
     ministryOrState: found.get('ministryOrState') ?? null,
     department: found.get('department') ?? null,
-    buyerEmail: found.get('buyerEmail') ?? null,
-    hodEmail: found.get('hodEmail') ?? null,
+    buyerEmail: emailIn(found.get('buyerEmail') ?? null),
+    hodEmail: emailIn(found.get('hodEmail') ?? null),
     evaluationMethod,
     typeOfBid: found.get('typeOfBid') ?? null,
     bidToRa: found.get('bidToRa') ?? null,
@@ -283,8 +362,8 @@ export function parseBidText(text: string): ParsedTender {
     requiredDocumentNames: documentNames(found.get('documents') ?? ''),
     mse: yesNo(found.get('mse') ?? null),
     mii: yesNo(found.get('mii') ?? null),
-    l1PlusPercent: l1 ? Number(l1[1]) : null,
-    quantityPercent: quantityPercent ? Number(quantityPercent[1]) : null,
+    l1PlusPercent: l1,
+    quantityPercent,
     emdRequired: emdFlag ?? (emdAmount != null && emdAmount > 0 ? true : null),
     emdAmount,
     epbgRequired: epbgFlag ?? (epbgPercentage != null ? true : null),
@@ -295,41 +374,48 @@ export function parseBidText(text: string): ParsedTender {
   }
 }
 
-type TextItem = { str?: string; transform?: number[] }
+export type TextItem = { str?: string; transform?: number[]; width?: number; height?: number }
 
-function linesFromPage(items: TextItem[]): string[] {
-  const rows: { y: number; parts: { x: number; str: string }[] }[] = []
+export function linesFromPage(items: TextItem[], page = 1): PdfLine[] {
+  const rows: { y: number; height: number; pieces: PdfPiece[] }[] = []
   for (const item of items) {
-    const str = item.str?.trim()
+    const str = item.str?.replace(/\s+/g, ' ').trim()
     if (!str) continue
     const x = item.transform?.[4] ?? 0
     const y = item.transform?.[5] ?? 0
     let row = rows.find((candidate) => Math.abs(candidate.y - y) < 2)
     if (!row) {
-      row = { y, parts: [] }
+      row = { y, height: 0, pieces: [] }
       rows.push(row)
     }
-    row.parts.push({ x, str })
+    row.height = Math.max(row.height, item.height ?? 0)
+    row.pieces.push({ x, end: x + (item.width ?? 0), text: str })
   }
   rows.sort((a, b) => b.y - a.y)
-  return rows.map((row) =>
-    row.parts
-      .sort((a, b) => a.x - b.x)
-      .map((part) => part.str)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim(),
-  )
+  return rows.map((row) => {
+    const pieces = row.pieces.sort((a, b) => a.x - b.x)
+    return {
+      text: pieces.map((piece) => piece.text).join(' '),
+      y: row.y,
+      height: row.height,
+      page,
+      pieces,
+    }
+  })
+}
+
+export function parseBidLines(layout: PdfLine[]): ParsedTender {
+  return parseBidText(layout.map((line) => line.text).join('\n'), layout)
 }
 
 export async function parsePdf(bytes: Uint8Array): Promise<ParsedTender> {
   const pdfjs = await import('pdfjs-dist')
   const doc = await pdfjs.getDocument({ data: bytes.slice() }).promise
-  const lines: string[] = []
+  const layout: PdfLine[] = []
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
     const page = await doc.getPage(pageNumber)
     const content = await page.getTextContent()
-    lines.push(...linesFromPage(content.items as TextItem[]))
+    layout.push(...linesFromPage(content.items as TextItem[], pageNumber))
   }
-  return parseBidText(lines.join('\n'))
+  return parseBidLines(layout)
 }

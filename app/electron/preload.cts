@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('panel', {
   unsave: (bidNumber: string) => ipcRenderer.invoke('unsave', bidNumber),
   setStatus: (bidNumber: string, status: string) => ipcRenderer.invoke('set-status', bidNumber, status),
   deleteTender: (bidNumber: string) => ipcRenderer.invoke('delete-tender', bidNumber),
+  reanalyze: (bidNumber: string) => ipcRenderer.invoke('reanalyze', bidNumber),
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) =>
     ipcRenderer.invoke('upload', bidNumber, name, data, filename),
   download: (bidNumber: string, name: string) => ipcRenderer.invoke('download', bidNumber, name),

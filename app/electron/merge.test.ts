@@ -43,8 +43,24 @@ test('merge rejects a file that is not a pdf before touching later files', async
 })
 
 test('merge names the file that cannot be read as a pdf', async () => {
-  const result = await mergeNamedPdfs([{ name: 'broken.pdf', bytes: new TextEncoder().encode('%PDF-1.7 nope') }])
+  const result = await mergeNamedPdfs([
+    { name: 'page.pdf', bytes: await page(200) },
+    { name: 'broken.pdf', bytes: new TextEncoder().encode('%PDF-1.7 nope') },
+  ])
   assert.deepEqual(result, { ok: false, message: 'broken.pdf could not be merged.' })
+})
+
+test('a single pdf is kept byte for byte instead of merged', async () => {
+  const bytes = await page(250)
+  const result = await mergeNamedPdfs([{ name: 'only.pdf', bytes }])
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.bytes, bytes)
+})
+
+test('a single unreadable pdf is named in the failure', async () => {
+  const result = await mergeNamedPdfs([{ name: 'broken.pdf', bytes: new TextEncoder().encode('%PDF-1.7 nope') }])
+  assert.deepEqual(result, { ok: false, message: 'broken.pdf could not be read.' })
 })
 
 test('a protected pdf is named in the failure', () => {

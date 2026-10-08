@@ -237,6 +237,24 @@ function register(): void {
     }
   })
 
+  ipcMain.handle('reanalyze', async (_event, bidNumber: unknown) => {
+    const db = records()
+    if (!db || typeof bidNumber !== 'string') return false
+    try {
+      let bytes = await files.readGemPdf(dataRoot(), bidNumber)
+      if (!bytes) {
+        const key = await store.storageKey(db, bidNumber, GEM_PDF_NAME).catch(() => null)
+        if (key) bytes = await store.readStored(db, key).catch(() => null)
+      }
+      if (!bytes) return false
+      await store.fillParsed(db, bidNumber, await parsePdf(bytes), { replaceDocuments: true })
+      notifyRows()
+      return true
+    } catch {
+      return false
+    }
+  })
+
   ipcMain.handle('set-status', async (_event, bidNumber: unknown, status: unknown) => {
     const db = records()
     if (!db || typeof bidNumber !== 'string' || (status !== null && !isTenderStatus(status))) return false

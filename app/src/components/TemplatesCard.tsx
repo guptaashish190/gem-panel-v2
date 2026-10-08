@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type { TemplatePlaceholder, TextTemplate } from '../panel'
 import { TemplatePreview } from './TemplatePreview'
 
+const productStarterTable = `| Product name | Qty | Offer price | MRP | OEM |
+| --- | --- | --- | --- | --- |
+| {{product.name}} | {{product.quantity}} | {{product.offerPrice}} | {{product.mrp}} | {{product.oem}} |`
+
 export function TemplatesCard() {
   const bodyRef = useRef<HTMLTextAreaElement>(null)
   const [templates, setTemplates] = useState<TextTemplate[] | null>(null)
@@ -34,17 +38,16 @@ export function TemplatesCard() {
     setNotice(null)
   }
 
-  function insertToken(key: string) {
-    const token = `{{${key}}}`
+  function insertText(text: string) {
     const el = bodyRef.current
     if (!el) {
-      setBody((current) => `${current}${token}`)
+      setBody((current) => `${current}${text}`)
       return
     }
     const start = el.selectionStart ?? body.length
     const end = el.selectionEnd ?? body.length
-    setBody(`${body.slice(0, start)}${token}${body.slice(end)}`)
-    const caret = start + token.length
+    setBody(`${body.slice(0, start)}${text}${body.slice(end)}`)
+    const caret = start + text.length
     requestAnimationFrame(() => {
       el.focus()
       el.setSelectionRange(caret, caret)
@@ -150,10 +153,13 @@ export function TemplatesCard() {
           </label>
           <div className="token-row">
             {placeholders.map((item) => (
-              <button key={item.key} type="button" className="pill" disabled={busy} onClick={() => insertToken(item.key)}>
+              <button key={item.key} type="button" className="pill" disabled={busy} onClick={() => insertText(`{{${item.key}}}`)}>
                 {`{{${item.key}}}`}
               </button>
             ))}
+            <button type="button" className="pill" disabled={busy} onClick={() => insertText(productStarterTable)}>
+              Products
+            </button>
           </div>
           <label className="wide">
             Text

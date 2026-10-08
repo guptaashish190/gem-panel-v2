@@ -12,7 +12,7 @@ export function TemplatePreview({ html, onClose }: { html: string; onClose: () =
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div
-        className="modal"
+        className="modal preview-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="template-preview-title"

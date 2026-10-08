@@ -146,6 +146,7 @@ export type PanelApi = {
   unsave: (bidNumber: string) => Promise<boolean>
   setStatus: (bidNumber: string, status: TenderStatus | null) => Promise<boolean>
   deleteTender: (bidNumber: string) => Promise<boolean>
+  reanalyze: (bidNumber: string) => Promise<boolean>
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) => Promise<boolean>
   download: (bidNumber: string, name: string) => Promise<boolean>
   exportDocument: (bidNumber: string, name: string) => Promise<TemplateDownload>

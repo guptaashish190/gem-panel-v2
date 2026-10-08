@@ -245,7 +245,12 @@ export async function bidsNeedingProducts(client: SupabaseClient): Promise<strin
     .map((row) => row.bid_number as string)
 }
 
-export async function fillParsed(client: SupabaseClient, bidNumber: string, parsed: ParsedTender): Promise<void> {
+export async function fillParsed(
+  client: SupabaseClient,
+  bidNumber: string,
+  parsed: ParsedTender,
+  options: { replaceDocuments?: boolean } = {},
+): Promise<void> {
   const update: Record<string, unknown> = {}
   const set = (column: string, value: unknown) => {
     if (value != null && value !== '') update[column] = value
@@ -291,10 +296,21 @@ export async function fillParsed(client: SupabaseClient, bidNumber: string, pars
     )
     if (productError) throw new Error(productError.message)
   }
-  const { data, error } = await client.from('document').select('name').eq('bid_number', bidNumber)
+  const { data, error } = await client.from('document').select('name, storage_key').eq('bid_number', bidNumber)
   if (error) throw new Error(error.message)
+  const wanted = documentNamesFor(parsed.requiredDocumentNames)
+  if (options.replaceDocuments && parsed.requiredDocumentNames.length > 0) {
+    const keep = new Set(wanted.map((name) => name.toLowerCase()))
+    const stale = (data ?? [])
+      .filter((row) => !row.storage_key && !keep.has((row.name as string).toLowerCase()))
+      .map((row) => row.name as string)
+    if (stale.length > 0) {
+      const { error: staleError } = await client.from('document').delete().eq('bid_number', bidNumber).in('name', stale)
+      if (staleError) throw new Error(staleError.message)
+    }
+  }
   const have = new Set((data ?? []).map((row) => row.name as string))
-  const missing = documentNamesFor(parsed.requiredDocumentNames).filter((name) => !have.has(name))
+  const missing = wanted.filter((name) => !have.has(name))
   if (missing.length > 0) {
     const { error: insertError } = await client.from('document').insert(
       missing.map((name) => ({ bid_number: bidNumber, name, storage_key: null })),

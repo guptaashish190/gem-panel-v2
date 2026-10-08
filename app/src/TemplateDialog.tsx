@@ -132,7 +132,7 @@ export function TemplateDialog({
       }}
     >
       <div
-        className={tab === 'pdfs' ? 'modal wide' : 'modal'}
+        className={tab === 'pdfs' || fields.some((field) => field.key === 'productRows') ? 'modal wide' : 'modal'}
         role="dialog"
         aria-modal="true"
         aria-labelledby="template-title"
@@ -187,23 +187,31 @@ export function TemplateDialog({
               </select>
             </label>
             {ready && fields.length === 0 ? <p className="empty">No fields to check.</p> : null}
-            {fields.map((field) => (
-              <label key={field.key} className="wide">
-                {field.label}
-                {field.key === 'address' || field.key === 'products' ? (
-                  <textarea
-                    rows={3}
-                    value={field.value}
-                    onChange={(event) => updateField(setFields, field.key, event.target.value)}
-                  />
-                ) : (
-                  <input
-                    value={field.value}
-                    onChange={(event) => updateField(setFields, field.key, event.target.value)}
-                  />
-                )}
-              </label>
-            ))}
+            {fields.map((field) =>
+              field.key === 'productRows' ? (
+                <ProductRowsEditor
+                  key={field.key}
+                  value={field.value}
+                  onChange={(value) => updateField(setFields, field.key, value)}
+                />
+              ) : (
+                <label key={field.key} className="wide">
+                  {field.label}
+                  {field.key === 'address' || field.key === 'products' ? (
+                    <textarea
+                      rows={3}
+                      value={field.value}
+                      onChange={(event) => updateField(setFields, field.key, event.target.value)}
+                    />
+                  ) : (
+                    <input
+                      value={field.value}
+                      onChange={(event) => updateField(setFields, field.key, event.target.value)}
+                    />
+                  )}
+                </label>
+              ),
+            )}
             <div className="settings-actions">
               <button type="button" className="btn btn-ghost" onClick={onClose}>
                 Close
@@ -238,6 +246,142 @@ export function TemplateDialog({
     </div>
     {preview != null ? <TemplatePreview html={preview} onClose={() => setPreview(null)} /> : null}
     </>
+  )
+}
+
+type ProductColumn = { key: string; label: string }
+type ProductRows = { columns: ProductColumn[]; rows: Record<string, string>[] }
+
+function parseProductRows(raw: string): ProductRows | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const record = parsed as Record<string, unknown>
+  if (!Array.isArray(record.columns) || !Array.isArray(record.rows)) return null
+  const columns: ProductColumn[] = []
+  for (const column of record.columns) {
+    if (!column || typeof column !== 'object' || Array.isArray(column)) return null
+    const item = column as Record<string, unknown>
+    if (typeof item.key !== 'string' || typeof item.label !== 'string') return null
+    columns.push({ key: item.key, label: item.label })
+  }
+  const rows: Record<string, string>[] = []
+  for (const row of record.rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return null
+    const cells: Record<string, string> = {}
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value !== 'string') return null
+      cells[key] = value
+    }
+    rows.push(cells)
+  }
+  return { columns, rows }
+}
+
+function ProductRowsEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const parsed = parseProductRows(value)
+  if (!parsed) {
+    return (
+      <label className="wide">
+        Products
+        <textarea rows={3} value={value} onChange={(event) => onChange(event.target.value)} />
+      </label>
+    )
+  }
+
+  function commit(next: ProductRows) {
+    onChange(JSON.stringify(next))
+  }
+
+  return (
+    <div className="product-grid">
+      <span className="product-grid-label">Products</span>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th className="product-row-action" />
+              {parsed.columns.map((column) => (
+                <th key={column.key} className={shortColumn(column.key) ? 'product-col-short' : undefined}>
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {parsed.rows.map((row, index) => (
+              <tr key={index}>
+                <td className="product-row-action">
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-icon btn-remove"
+                    aria-label="Remove"
+                    onClick={() =>
+                      commit({
+                        columns: parsed.columns,
+                        rows: parsed.rows.filter((_, rowIndex) => rowIndex !== index),
+                      })
+                    }
+                  >
+                    <DeleteIcon />
+                  </button>
+                </td>
+                {parsed.columns.map((column) => (
+                  <td key={column.key} className={shortColumn(column.key) ? 'product-col-short' : undefined}>
+                    <input
+                      aria-label={column.label}
+                      value={row[column.key] ?? ''}
+                      onChange={(event) => {
+                        const rows = parsed.rows.map((item, rowIndex) =>
+                          rowIndex === index ? { ...item, [column.key]: event.target.value } : item,
+                        )
+                        commit({ columns: parsed.columns, rows })
+                      }}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => {
+            const blank: Record<string, string> = {}
+            for (const column of parsed.columns) blank[column.key] = ''
+            commit({ columns: parsed.columns, rows: [...parsed.rows, blank] })
+          }}
+        >
+          Add product
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function shortColumn(key: string) {
+  return key === 'quantity' || key === 'offerPrice' || key === 'mrp'
+}
+
+function DeleteIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M3.5 4.5h9M6.25 4.5V3.25h3.5V4.5M4.75 4.5l.5 8.25h5.5l.5-8.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }
 
