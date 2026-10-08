@@ -1,9 +1,25 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { fillTemplate, PLACEHOLDERS, productStarterTable, productsLine, renderTemplateDocument, templateFields, templateTokens, templateValues } from './template.js'
+import { storedCompanyFields } from './store.js'
+import {
+  companyFieldLabels,
+  customFieldsOf,
+  placeholdersFor,
+  fieldKey,
+  fillTemplate,
+  isReservedKey,
+  PLACEHOLDERS,
+  productStarterTable,
+  productsLine,
+  renderTemplateDocument,
+  RESERVED_KEYS,
+  templateFields,
+  templateTokens,
+  templateValues,
+} from './template.js'
 
-const company = { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1' }
+const company = { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', fields: [] }
 
 function tender(products: { name: string; quantity: number | null }[]) {
   return {
@@ -86,7 +102,7 @@ test('products join name and quantity', () => {
 
 test('known values fill the matching tokens', () => {
   const values = templateValues(
-    { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1' },
+    { name: 'Acme', signatory: 'Ada', address: 'Pune', drugLicenseNumber: 'DL-1', gstin: '06GST', email: 'a@b.in', phone: '98', udyamNumber: 'UDYAM-1', fields: [] },
     {
       bidNumber: 'GEM/2026/B/1',
       bidEnd: '08-10-2026',
@@ -102,6 +118,10 @@ test('known values fill the matching tokens', () => {
     },
   )
   assert.equal(values.companyName, 'Acme')
+  assert.equal(values.gstin, '06GST')
+  assert.equal(values.email, 'a@b.in')
+  assert.equal(values.phone, '98')
+  assert.equal(values.udyamNumber, 'UDYAM-1')
   assert.equal(values.hodEmail, '')
   assert.equal(values.emdAmount, '5000')
   assert.equal(values.products, 'Mask 10')
@@ -109,6 +129,106 @@ test('known values fill the matching tokens', () => {
     { key: 'bidNumber', label: 'Bid number', value: 'GEM/2026/B/1' },
     { key: 'note', label: 'note', value: '' },
   ])
+})
+
+test('custom field keys come from the label in camelCase', () => {
+  assert.equal(fieldKey('GSTIN'), 'gstin')
+  assert.equal(fieldKey('Udyam Regn.'), 'udyamRegn')
+  assert.equal(fieldKey('Mob'), 'mob')
+  assert.equal(fieldKey('PAN no'), 'panNo')
+  assert.equal(fieldKey('1st Contact'), 'field1stContact')
+  assert.equal(fieldKey('---'), '')
+  assert.equal(fieldKey('  '), '')
+})
+
+test('custom field keys may not clash with built-in tokens', () => {
+  assert.equal(isReservedKey(fieldKey('Bid number')), true)
+  assert.equal(isReservedKey(fieldKey('Company name')), true)
+  for (const key of ['products', 'productRows', 'product', 'buyerEmail', 'hodEmail', 'evaluationMethod', 'emdAmount']) {
+    assert.equal(isReservedKey(key), true)
+  }
+  assert.equal(isReservedKey('BIDNUMBER'), true)
+  assert.equal(isReservedKey('gstin'), true)
+  assert.equal(isReservedKey('panNo'), false)
+  const settings = readFileSync(new URL('../src/SettingsPanel.tsx', import.meta.url), 'utf8')
+  for (const key of RESERVED_KEYS) assert.ok(settings.includes(`'${key}'`), key)
+})
+
+test('custom company fields fill on prepare with their label', () => {
+  const withGstin = { ...company, fields: [{ key: 'panNo', label: 'PAN no', value: '06ABC' }] }
+  const values = templateValues(withGstin, tender([]))
+  assert.equal(values.panNo, '06ABC')
+  assert.deepEqual(templateFields('GST: {{panNo}} {{udyam}}', values, { panNo: 'PAN no' }), [
+    { key: 'panNo', label: 'PAN no', value: '06ABC' },
+    { key: 'udyam', label: 'udyam', value: '' },
+  ])
+  assert.match(renderTemplateDocument('GST: {{panNo}}', values), /GST: 06ABC/)
+})
+
+test('built-in values win over a custom field with the same key', () => {
+  const clash = { ...company, fields: [{ key: 'companyName', label: 'Other', value: 'Wrong' }] }
+  const values = templateValues(clash, tender([]))
+  assert.equal(values.companyName, 'Acme')
+  assert.deepEqual(templateFields('{{companyName}}', values, { companyName: 'Other' }), [
+    { key: 'companyName', label: 'Company name', value: 'Acme' },
+  ])
+})
+
+test('saving custom fields refuses duplicates and built-in keys and trims values', () => {
+  assert.deepEqual(customFieldsOf([{ key: 'panNo', label: ' PAN no ', value: ' 06ABC ' }]), [
+    { key: 'panNo', label: 'PAN no', value: '06ABC' },
+  ])
+  assert.equal(
+    customFieldsOf([
+      { key: 'panNo', label: 'PAN no', value: 'a' },
+      { key: 'PAN no', label: 'PAN no', value: 'b' },
+    ]),
+    null,
+  )
+  assert.equal(customFieldsOf([{ key: 'bidNumber', label: 'Bid number', value: 'x' }]), null)
+  assert.equal(customFieldsOf([{ key: '1st', label: '1st', value: 'x' }]), null)
+  assert.equal(customFieldsOf([{ key: 'panNo', label: '   ', value: 'x' }]), null)
+  assert.equal(customFieldsOf(undefined), null)
+})
+
+test('custom chips follow the built-ins and prepare labels come from company fields', () => {
+  const fields = [
+    { key: 'panNo', label: 'PAN no', value: 'A' },
+    { key: 'mob', label: 'Mob', value: 'B' },
+  ]
+  assert.deepEqual(placeholdersFor(fields), [...PLACEHOLDERS, { key: 'panNo', label: 'PAN no' }, { key: 'mob', label: 'Mob' }])
+  assert.deepEqual(placeholdersFor([]), PLACEHOLDERS)
+  assert.deepEqual(companyFieldLabels(fields), { panNo: 'PAN no', mob: 'Mob' })
+})
+
+test('a company row without the fields column loads no custom fields', () => {
+  assert.deepEqual(storedCompanyFields(undefined), [])
+  assert.deepEqual(storedCompanyFields(null), [])
+  assert.deepEqual(
+    storedCompanyFields([{ key: 'panNo', label: 'PAN no', value: '06ABC' }, { key: 'panNo', label: 'Again', value: 'x' }, 'junk']),
+    [{ key: 'panNo', label: 'PAN no', value: '06ABC' }],
+  )
+  assert.deepEqual(
+    storedCompanyFields([
+      { key: 'gstin', label: 'GSTIN', value: 'old' },
+      { key: 'BidNumber', label: 'Bid', value: 'x' },
+      { key: 'mob', label: 'Mob', value: '98' },
+    ]),
+    [{ key: 'mob', label: 'Mob', value: '98' }],
+  )
+})
+
+test('settings derives custom keys the same way as the main process', () => {
+  const settings = readFileSync(new URL('../src/SettingsPanel.tsx', import.meta.url), 'utf8')
+  const source = fieldKey.toString().replace(/[\s;]+/g, '')
+  const match = settings.match(/function fieldKey\(label: string\): string \{[\s\S]*?\n\}/)
+  assert.ok(match)
+  const copy = match[0].replace(/: string/g, '').replace(/[\s;]+/g, '')
+  assert.equal(copy, source)
+})
+
+test('settings preview leaves custom tokens', () => {
+  assert.match(renderTemplateDocument('GST {{panNo}}', {}), /\{\{panNo\}\}/)
 })
 
 test('markdown download keeps bold, tables, and centered html', () => {

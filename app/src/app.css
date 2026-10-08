@@ -648,6 +648,19 @@ tbody tr.pending { cursor: default; }
   justify-content: flex-end;
 }
 
+.custom-field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-form .custom-field-row input { flex: 1; }
+
+.settings-form .custom-field-add {
+  grid-column: 1 / -1;
+  padding: 0;
+}
+
 .doc-add {
   display: flex;
   flex-wrap: wrap;

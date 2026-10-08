@@ -45,3 +45,11 @@
 - source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-fetch-tender-status.md`
   summary: A saved bid with no local PDF loses its saved color, and product rows use the list pointer.
   evidence: `tbody tr.warn` is declared after `tbody tr.saved`, so the warning background wins. `tbody tr { cursor: pointer }` also applies to product and document tables.
+
+- source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-custom-company-fields.md`
+  summary: The old-database company load (`select('*')` with no `fields` column) has no test that runs the query.
+  evidence: Only `storedCompanyFields` is tested; naming `fields` in the select still passes all tests. Needs a fake Supabase client.
+
+- source_spec: `/Users/ashishgupta/Documents/gem-panel2/_bmad-output/implementation-artifacts/spec-custom-company-fields.md`
+  summary: Settings add-field refusals (clash, duplicate, no key) are only checked by source-text tests, and `fieldKey`/reserved keys are copied into the renderer.
+  evidence: Deleting the `taken.some(...)` check in `SettingsPanel.tsx` still passes; a shared renderer-and-electron module would let one tested function serve both.

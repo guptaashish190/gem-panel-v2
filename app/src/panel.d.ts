@@ -77,11 +77,22 @@ export type TenderDetail = {
   documents: TenderDocument[]
 }
 
+export type CompanyField = {
+  key: string
+  label: string
+  value: string
+}
+
 export type CompanyFields = {
   name: string
   signatory: string
   address: string
   drugLicenseNumber: string
+  gstin: string
+  email: string
+  phone: string
+  udyamNumber: string
+  fields: CompanyField[]
 }
 
 export type CompanyDocument = {

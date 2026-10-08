@@ -1,11 +1,15 @@
 import { marked } from 'marked'
-import type { CompanyFields, TemplateField, TemplatePlaceholder } from './types.js'
+import type { CompanyField, CompanyFields, TemplateField, TemplatePlaceholder } from './types.js'
 
 export const PLACEHOLDERS: TemplatePlaceholder[] = [
   { key: 'companyName', label: 'Company name' },
   { key: 'signatory', label: 'Authorized signatory' },
   { key: 'address', label: 'Address' },
   { key: 'drugLicenseNumber', label: 'Drug license number' },
+  { key: 'gstin', label: 'GSTIN' },
+  { key: 'email', label: 'Email' },
+  { key: 'phone', label: 'Phone number' },
+  { key: 'udyamNumber', label: 'Udyam certificate number' },
   { key: 'bidNumber', label: 'Bid number' },
   { key: 'bidEnd', label: 'Bid end' },
   { key: 'offerValidity', label: 'Offer validity' },
@@ -36,6 +40,67 @@ export type TemplateTender = {
   beneficiaryName: string | null
   emdAmount: number | null
   products: { name: string; quantity: number | null }[]
+}
+
+const TENDER_KEYS: (keyof TemplateTender)[] = [
+  'bidNumber',
+  'bidEnd',
+  'offerValidity',
+  'ministryOrState',
+  'department',
+  'buyerEmail',
+  'hodEmail',
+  'evaluationMethod',
+  'beneficiaryName',
+  'emdAmount',
+  'products',
+]
+
+export const RESERVED_KEYS: string[] = [
+  ...new Set([...PLACEHOLDERS.map((item) => item.key), ...TENDER_KEYS, 'products', 'productRows', 'product']),
+]
+
+export function isReservedKey(key: string): boolean {
+  const lower = key.toLowerCase()
+  return RESERVED_KEYS.some((item) => item.toLowerCase() === lower)
+}
+
+export function fieldKey(label: string): string {
+  const words = label.match(/[A-Za-z0-9]+/g) ?? []
+  const key = words
+    .map((word, index) => {
+      const lower = word.toLowerCase()
+      return index === 0 ? lower : `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`
+    })
+    .join('')
+  if (!key) return ''
+  return /^[0-9]/.test(key) ? `field${key}` : key
+}
+
+export function customFieldsOf(value: unknown): CompanyField[] | null {
+  if (!Array.isArray(value)) return null
+  const result: CompanyField[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null
+    const row = item as Record<string, unknown>
+    if (typeof row.key !== 'string' || typeof row.label !== 'string' || typeof row.value !== 'string') return null
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(row.key) || isReservedKey(row.key)) return null
+    if (!row.label.trim()) return null
+    const lower = row.key.toLowerCase()
+    if (seen.has(lower)) return null
+    seen.add(lower)
+    result.push({ key: row.key, label: row.label.trim(), value: row.value.trim() })
+  }
+  return result
+}
+
+export function placeholdersFor(fields: CompanyField[]): TemplatePlaceholder[] {
+  return [...PLACEHOLDERS, ...fields.map((field) => ({ key: field.key, label: field.label }))]
+}
+
+export function companyFieldLabels(fields: CompanyField[]): Record<string, string> {
+  return Object.fromEntries(fields.map((field) => [field.key, field.label]))
 }
 
 function tokenPattern(): RegExp {
@@ -198,11 +263,18 @@ export function productsLine(products: { name: string; quantity: number | null }
 }
 
 export function templateValues(company: CompanyFields, tender: TemplateTender): Record<string, string> {
+  const custom: Record<string, string> = {}
+  for (const field of company.fields) custom[field.key] = field.value
   return {
+    ...custom,
     companyName: company.name,
     signatory: company.signatory,
     address: company.address,
     drugLicenseNumber: company.drugLicenseNumber,
+    gstin: company.gstin,
+    email: company.email,
+    phone: company.phone,
+    udyamNumber: company.udyamNumber,
     bidNumber: tender.bidNumber,
     bidEnd: tender.bidEnd ?? '',
     offerValidity: tender.offerValidity ?? '',
@@ -218,13 +290,17 @@ export function templateValues(company: CompanyFields, tender: TemplateTender): 
   }
 }
 
-export function templateFields(body: string, values: Record<string, string>): TemplateField[] {
+export function templateFields(
+  body: string,
+  values: Record<string, string>,
+  customLabels: Record<string, string> = {},
+): TemplateField[] {
   const columns = patternColumns(body)
   const fields = templateTokens(body)
     .filter((key) => columns.length === 0 || key !== 'productRows')
     .map((key) => ({
       key,
-      label: labels.get(key) ?? key,
+      label: labels.get(key) ?? (Object.hasOwn(customLabels, key) ? customLabels[key] : key),
       value: values[key] ?? '',
     }))
   if (columns.length === 0) return fields

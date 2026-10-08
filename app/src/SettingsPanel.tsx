@@ -1,8 +1,44 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import type { CompanyDocument } from './panel'
+import type { CompanyDocument, CompanyField } from './panel'
 import { TemplatesCard } from './components/TemplatesCard'
 
 const SUGGESTIONS = ['Bidder Turnover Certificate', 'Drug License']
+
+const RESERVED_KEYS = [
+  'companyName',
+  'signatory',
+  'address',
+  'drugLicenseNumber',
+  'gstin',
+  'email',
+  'phone',
+  'udyamNumber',
+  'bidNumber',
+  'bidEnd',
+  'offerValidity',
+  'ministryOrState',
+  'department',
+  'beneficiaryName',
+  'buyerEmail',
+  'hodEmail',
+  'evaluationMethod',
+  'emdAmount',
+  'products',
+  'productRows',
+  'product',
+]
+
+function fieldKey(label: string): string {
+  const words = label.match(/[A-Za-z0-9]+/g) ?? []
+  const key = words
+    .map((word, index) => {
+      const lower = word.toLowerCase()
+      return index === 0 ? lower : `${lower.charAt(0).toUpperCase()}${lower.slice(1)}`
+    })
+    .join('')
+  if (!key) return ''
+  return /^[0-9]/.test(key) ? `field${key}` : key
+}
 
 export function SettingsPanel() {
   const [loaded, setLoaded] = useState(false)
@@ -11,6 +47,13 @@ export function SettingsPanel() {
   const [signatory, setSignatory] = useState('')
   const [address, setAddress] = useState('')
   const [drugLicenseNumber, setDrugLicenseNumber] = useState('')
+  const [gstin, setGstin] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [udyamNumber, setUdyamNumber] = useState('')
+  const [customFields, setCustomFields] = useState<CompanyField[]>([])
+  const [fieldDraft, setFieldDraft] = useState('')
+  const [savedCount, setSavedCount] = useState(0)
   const [documents, setDocuments] = useState<CompanyDocument[]>([])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -29,6 +72,11 @@ export function SettingsPanel() {
       setSignatory(next.signatory)
       setAddress(next.address)
       setDrugLicenseNumber(next.drugLicenseNumber)
+      setGstin(next.gstin)
+      setEmail(next.email)
+      setPhone(next.phone)
+      setUdyamNumber(next.udyamNumber)
+      setCustomFields(next.fields)
     }
     setDocuments(next.documents)
     setLoaded(true)
@@ -50,14 +98,54 @@ export function SettingsPanel() {
     setBusy(true)
     setNotice(null)
     try {
-      const ok = await panel.saveCompany({ name, signatory, address, drugLicenseNumber })
-      if (ok) await load(true)
+      const ok = await panel.saveCompany({
+        name,
+        signatory,
+        address,
+        drugLicenseNumber,
+        gstin,
+        email,
+        phone,
+        udyamNumber,
+        fields: customFields,
+      })
+      if (ok) {
+        await load(true)
+        setSavedCount((count) => count + 1)
+      }
       setNotice(ok ? 'Saved.' : 'Could not save.')
     } catch {
       setNotice('Could not save.')
     } finally {
       setBusy(false)
     }
+  }
+
+  function onAddField() {
+    const label = fieldDraft.trim()
+    if (busy || !label) return
+    const key = fieldKey(label)
+    if (!key) {
+      setNotice('Use letters or digits in the field name.')
+      return
+    }
+    const lower = key.toLowerCase()
+    const taken = [...RESERVED_KEYS, ...customFields.map((field) => field.key)]
+    if (taken.some((item) => item.toLowerCase() === lower)) {
+      setNotice('That field is already listed.')
+      return
+    }
+    setNotice(null)
+    setCustomFields((current) => [...current, { key, label, value: '' }])
+    setFieldDraft('')
+  }
+
+  function setFieldValue(key: string, value: string) {
+    setCustomFields((current) => current.map((field) => (field.key === key ? { ...field, value } : field)))
+  }
+
+  function removeField(key: string) {
+    setCustomFields((current) => current.filter((field) => field.key !== key))
   }
 
   async function onAdd(value: string) {
@@ -163,6 +251,56 @@ export function SettingsPanel() {
               Drug license number
               <input value={drugLicenseNumber} onChange={(event) => setDrugLicenseNumber(event.target.value)} />
             </label>
+            <label>
+              GSTIN
+              <input value={gstin} onChange={(event) => setGstin(event.target.value)} />
+            </label>
+            <label>
+              Udyam certificate number
+              <input value={udyamNumber} onChange={(event) => setUdyamNumber(event.target.value)} />
+            </label>
+            <label>
+              Email
+              <input value={email} onChange={(event) => setEmail(event.target.value)} />
+            </label>
+            <label>
+              Phone number
+              <input type="tel" value={phone} onChange={(event) => setPhone(event.target.value)} />
+            </label>
+            {customFields.map((field) => (
+              <label key={field.key} className="wide">
+                {field.label}
+                <span className="custom-field-row">
+                  <input value={field.value} onChange={(event) => setFieldValue(field.key, event.target.value)} />
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-remove"
+                    aria-label={`Remove ${field.label}`}
+                    disabled={busy}
+                    onClick={() => removeField(field.key)}
+                  >
+                    Remove
+                  </button>
+                </span>
+              </label>
+            ))}
+            <div className="doc-add custom-field-add">
+              <input
+                className="grow"
+                value={fieldDraft}
+                placeholder="Field name, e.g. GSTIN"
+                aria-label="Field name"
+                onChange={(event) => setFieldDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  event.preventDefault()
+                  onAddField()
+                }}
+              />
+              <button type="button" className="btn btn-secondary" disabled={busy || !fieldDraft.trim()} onClick={onAddField}>
+                Add field
+              </button>
+            </div>
             <div className="settings-actions">
               <button type="submit" className="btn btn-primary" disabled={busy}>
                 Save
@@ -242,7 +380,7 @@ export function SettingsPanel() {
         </div>
       </section>
 
-      <TemplatesCard />
+      <TemplatesCard refreshKey={savedCount} />
       {notice ? (
         <p className="form-note" role="status">
           {notice}

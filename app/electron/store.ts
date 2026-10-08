@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   FILE_BUCKET,
   GEM_PDF_NAME,
+  type CompanyField,
   type CompanyFields,
   type CompanyProfile,
   type DocumentView,
@@ -16,7 +17,7 @@ import {
   type TextTemplate,
 } from './types.js'
 import { documentIsLocal, fileAction, localCompanyDocumentPath, localDocumentFileName } from './files.js'
-import { templateFields, templateValues } from './template.js'
+import { companyFieldLabels, isReservedKey, templateFields, templateValues } from './template.js'
 
 type Query = {
   eq: (column: string, value: string | boolean) => Query
@@ -503,7 +504,7 @@ export async function uploadStored(
 
 export async function loadCompany(client: SupabaseClient, root: string): Promise<CompanyProfile> {
   const [companyResult, documentResult] = await Promise.all([
-    client.from('company').select('name, authorized_signatory, address, drug_license_number').eq('id', 1).maybeSingle(),
+    client.from('company').select('*').eq('id', 1).maybeSingle(),
     client.from('company_document').select('name, storage_key').order('id'),
   ])
   if (companyResult.error) throw new Error(companyResult.error.message)
@@ -521,8 +522,30 @@ export async function loadCompany(client: SupabaseClient, root: string): Promise
     signatory: (row?.authorized_signatory as string | null) ?? '',
     address: (row?.address as string | null) ?? '',
     drugLicenseNumber: (row?.drug_license_number as string | null) ?? '',
+    gstin: (row?.gstin as string | null) ?? '',
+    email: (row?.email as string | null) ?? '',
+    phone: (row?.phone as string | null) ?? '',
+    udyamNumber: (row?.udyam_number as string | null) ?? '',
+    fields: storedCompanyFields(row?.fields),
     documents,
   }
+}
+
+export function storedCompanyFields(value: unknown): CompanyField[] {
+  if (!Array.isArray(value)) return []
+  const fields: CompanyField[] = []
+  const seen = new Set<string>()
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    if (typeof record.key !== 'string' || typeof record.label !== 'string' || typeof record.value !== 'string') continue
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(record.key) || isReservedKey(record.key)) continue
+    const lower = record.key.toLowerCase()
+    if (seen.has(lower)) continue
+    seen.add(lower)
+    fields.push({ key: record.key, label: record.label, value: record.value })
+  }
+  return fields
 }
 
 export async function saveCompany(client: SupabaseClient, fields: CompanyFields): Promise<void> {
@@ -533,6 +556,11 @@ export async function saveCompany(client: SupabaseClient, fields: CompanyFields)
       authorized_signatory: fields.signatory,
       address: fields.address,
       drug_license_number: fields.drugLicenseNumber,
+      gstin: fields.gstin,
+      email: fields.email,
+      phone: fields.phone,
+      udyam_number: fields.udyamNumber,
+      fields: fields.fields.map((field) => ({ key: field.key, label: field.label, value: field.value })),
     },
     { onConflict: 'id' },
   )
@@ -652,6 +680,10 @@ export async function previewTemplate(
   return {
     id: template.id,
     name: template.name,
-    fields: templateFields(template.body, templateValues(company, tender)),
+    fields: templateFields(
+      template.body,
+      templateValues(company, tender),
+      companyFieldLabels(company.fields),
+    ),
   }
 }

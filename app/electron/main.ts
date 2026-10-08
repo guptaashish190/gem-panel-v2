@@ -9,7 +9,7 @@ import * as files from './files.js'
 import { parsePdf } from './parse.js'
 import * as store from './store.js'
 import { mergeNamedPdfs, pdfDownloadName } from './merge.js'
-import { PLACEHOLDERS, renderTemplateDocument } from './template.js'
+import { customFieldsOf, PLACEHOLDERS, placeholdersFor, renderTemplateDocument } from './template.js'
 import {
   GEM_PDF_NAME,
   isTenderStatus,
@@ -386,7 +386,16 @@ function register(): void {
     }
   })
 
-  ipcMain.handle('template-placeholders', () => PLACEHOLDERS)
+  ipcMain.handle('template-placeholders', async () => {
+    const db = records()
+    if (!db) return PLACEHOLDERS
+    try {
+      const company = await store.loadCompany(db, dataRoot())
+      return placeholdersFor(company.fields)
+    } catch {
+      return PLACEHOLDERS
+    }
+  })
 
   ipcMain.handle('preview-template-text', (_event, body: unknown) => {
     if (typeof body !== 'string') return null
@@ -581,15 +590,26 @@ function companyFieldsOf(value: unknown): CompanyFields | null {
     typeof fields.name !== 'string' ||
     typeof fields.signatory !== 'string' ||
     typeof fields.address !== 'string' ||
-    typeof fields.drugLicenseNumber !== 'string'
+    typeof fields.drugLicenseNumber !== 'string' ||
+    typeof fields.gstin !== 'string' ||
+    typeof fields.email !== 'string' ||
+    typeof fields.phone !== 'string' ||
+    typeof fields.udyamNumber !== 'string'
   ) {
     return null
   }
+  const custom = customFieldsOf(fields.fields)
+  if (!custom) return null
   return {
     name: fields.name.trim(),
     signatory: fields.signatory.trim(),
     address: fields.address.trim(),
     drugLicenseNumber: fields.drugLicenseNumber.trim(),
+    gstin: fields.gstin.trim(),
+    email: fields.email.trim(),
+    phone: fields.phone.trim(),
+    udyamNumber: fields.udyamNumber.trim(),
+    fields: custom,
   }
 }
 

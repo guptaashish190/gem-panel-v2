@@ -6,7 +6,7 @@ const productStarterTable = `| Product name | Qty | Offer price | MRP | OEM |
 | --- | --- | --- | --- | --- |
 | {{product.name}} | {{product.quantity}} | {{product.offerPrice}} | {{product.mrp}} | {{product.oem}} |`
 
-export function TemplatesCard() {
+export function TemplatesCard({ refreshKey }: { refreshKey: number }) {
   const bodyRef = useRef<HTMLTextAreaElement>(null)
   const [templates, setTemplates] = useState<TextTemplate[] | null>(null)
   const [placeholders, setPlaceholders] = useState<TemplatePlaceholder[]>([])
@@ -30,6 +30,17 @@ export function TemplatesCard() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (refreshKey === 0) return
+    let live = true
+    void window.panel?.templatePlaceholders().then((chips) => {
+      if (live) setPlaceholders(chips)
+    })
+    return () => {
+      live = false
+    }
+  }, [refreshKey])
 
   function choose(template: TextTemplate | null) {
     setSelectedId(template?.id ?? null)
