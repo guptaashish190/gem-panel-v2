@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -10,11 +11,35 @@ import { GEM_PDF_NAME, UNREACHABLE, type ListFilters, type ListScreen } from './
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+type AppConfig = {
+  gemBaseUrl: string
+  supabaseUrl: string
+  supabaseServiceKey: string
+}
+
+function loadConfig(): AppConfig {
+  const fallback: AppConfig = {
+    gemBaseUrl: 'https://bidplus.gem.gov.in',
+    supabaseUrl: '',
+    supabaseServiceKey: '',
+  }
+  try {
+    const raw = JSON.parse(readFileSync(path.join(__dirname, '../config.json'), 'utf8')) as Partial<AppConfig>
+    return {
+      gemBaseUrl: raw.gemBaseUrl?.trim() || fallback.gemBaseUrl,
+      supabaseUrl: raw.supabaseUrl?.trim() ?? '',
+      supabaseServiceKey: raw.supabaseServiceKey?.trim() ?? '',
+    }
+  } catch {
+    return fallback
+  }
+}
+
+const config = loadConfig()
+
 function recordsConfig(): { url: string; key: string } | null {
-  const url = process.env.SUPABASE_URL?.trim()
-  const key = process.env.SUPABASE_SERVICE_KEY?.trim()
-  if (!url || !key) return null
-  return { url, key }
+  if (!config.supabaseUrl || !config.supabaseServiceKey) return null
+  return { url: config.supabaseUrl, key: config.supabaseServiceKey }
 }
 
 let client: SupabaseClient | null = null
@@ -37,7 +62,7 @@ function dataRoot(): string {
   return app.getPath('userData')
 }
 
-const lister = createLister()
+const lister = createLister(fetch, config.gemBaseUrl)
 let fetchChain: Promise<void> = Promise.resolve()
 let fetchesRunning = 0
 
@@ -193,7 +218,7 @@ function createWindow(): void {
     minHeight: 560,
     title: 'GeM Tender Panel',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
     },
