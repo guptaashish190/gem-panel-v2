@@ -475,10 +475,9 @@ test('fetch next page reads one page after the cursor', async () => {
   assert.equal(cursor, 5)
 })
 
-test('missing file downloads the stored bytes and does not call GeM', async () => {
+test('missing file downloads the stored bytes', async () => {
   const stored = Uint8Array.from([4, 5, 6])
   let written: Uint8Array | null = null
-  let gemCalls = 0
   const ok = await deliverMissingFile({
     storedKey: 'GEM-2026-B-1/gem.pdf',
     readStored: async (key) => {
@@ -488,13 +487,8 @@ test('missing file downloads the stored bytes and does not call GeM', async () =
     writeLocal: async (bytes) => {
       written = bytes
     },
-    downloadFromGem: async () => {
-      gemCalls += 1
-      return Uint8Array.from([9])
-    },
   })
   assert.equal(ok, true)
-  assert.equal(gemCalls, 0)
   assert.deepEqual(written, stored)
   assert.equal(fileAction(false, true), 'download')
   assert.equal(fileAction(true, true), 'ready')
@@ -511,7 +505,6 @@ test('a failed stored download leaves the file action as download', async () => 
     writeLocal: async () => {
       wrote = true
     },
-    downloadFromGem: async () => Uint8Array.from([1]),
   })
   assert.equal(ok, false)
   assert.equal(wrote, false)

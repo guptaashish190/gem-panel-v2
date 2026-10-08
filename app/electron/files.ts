@@ -82,6 +82,11 @@ export async function writeDocument(
   return filename
 }
 
+export async function localDocumentFileName(root: string, bidNumber: string, docName: string): Promise<string | null> {
+  const file = await localDocumentPath(root, bidNumber, docName)
+  return file ? path.basename(file) : null
+}
+
 export async function localDocumentPath(root: string, bidNumber: string, docName: string): Promise<string | null> {
   if (docName === GEM_PDF_NAME) {
     const file = gemPdfPath(root, bidNumber)
@@ -176,7 +181,6 @@ export async function deliverMissingFile(ports: {
   storedKey: string | null
   readStored: (key: string) => Promise<Uint8Array>
   writeLocal: (bytes: Uint8Array) => Promise<void>
-  downloadFromGem: (listingId: string) => Promise<Uint8Array>
 }): Promise<boolean> {
   if (!ports.storedKey) return false
   try {

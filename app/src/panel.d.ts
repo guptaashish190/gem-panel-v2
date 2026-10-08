@@ -41,6 +41,7 @@ export type Product = {
 
 export type TenderDocument = {
   name: string
+  filename: string | null
   action: 'ready' | 'download' | 'upload'
   template: boolean
 }
@@ -141,6 +142,7 @@ export type PanelApi = {
   deleteTender: (bidNumber: string) => Promise<boolean>
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) => Promise<boolean>
   download: (bidNumber: string, name: string) => Promise<boolean>
+  exportDocument: (bidNumber: string, name: string) => Promise<TemplateDownload>
   openLocal: (bidNumber: string, name: string) => Promise<boolean>
   company: () => Promise<CompanyProfile | null>
   saveCompany: (fields: CompanyFields) => Promise<boolean>
@@ -148,6 +150,7 @@ export type PanelApi = {
   removeCompanyDocument: (name: string) => Promise<boolean>
   uploadCompanyDocument: (name: string, data: Uint8Array, filename: string) => Promise<boolean>
   downloadCompanyDocument: (name: string) => Promise<boolean>
+  exportCompanyDocument: (name: string) => Promise<TemplateDownload>
   openCompanyDocument: (name: string) => Promise<boolean>
   templates: () => Promise<TextTemplate[] | null>
   templatePlaceholders: () => Promise<TemplatePlaceholder[]>
@@ -155,6 +158,13 @@ export type PanelApi = {
   removeTemplate: (id: number) => Promise<boolean>
   previewTemplate: (id: number, bidNumber: string) => Promise<TemplatePreview | null>
   previewTemplateText: (body: string) => Promise<string | null>
+  renderTemplate: (id: number, values: Record<string, string>) => Promise<string | null>
+  saveTemplateDocument: (
+    id: number,
+    bidNumber: string,
+    documentName: string,
+    values: Record<string, string>,
+  ) => Promise<boolean>
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) => Promise<TemplateDownload>
   onRow: (listener: () => void) => () => void
   onFetchDone: (listener: () => void) => () => void

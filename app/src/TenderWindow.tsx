@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TenderDetail } from './panel'
+import { DocumentsSection } from './components/DocumentsSection'
+import { Stat } from './components/Stat'
+import { money } from './format'
 import { TemplateDialog } from './TemplateDialog'
 import { statusTone, TENDER_STATUSES } from './status'
 
@@ -7,15 +10,6 @@ function show(value: string | number | boolean | null): string {
   if (value == null || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   return String(value)
-}
-
-function money(amount: number | null): string {
-  if (amount == null) return '—'
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(amount)
 }
 
 function emdStat(detail: TenderDetail): { value: string; warn: boolean } {
@@ -244,96 +238,18 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
               )}
             </section>
 
-            <section className="block">
-              <h2>Documents</h2>
-              {documents.length === 0 ? <p className="empty">No documents required on this tender.</p> : null}
-              {documents.length > 0 ? (
-                <div className="table-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Document</th>
-                        <th>File</th>
-                        <th className="end">Template</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {documents.map((doc) => (
-                        <tr key={doc.name} className={doc.action === 'download' ? 'warn' : ''}>
-                          <td>{doc.name}</td>
-                          <td>
-                            {doc.action === 'ready' ? (
-                              <button
-                                type="button"
-                                className="btn btn-secondary"
-                                onClick={() => void window.panel?.openLocal(detail.bidNumber, doc.name)}
-                              >
-                                Ready
-                              </button>
-                            ) : null}
-                            {doc.action === 'download' ? (
-                              <button
-                                type="button"
-                                className="btn btn-primary"
-                                onClick={() => {
-                                  void window.panel?.download(detail.bidNumber, doc.name)?.then((ok) => {
-                                    if (ok) void reload()
-                                  })
-                                }}
-                              >
-                                Download
-                              </button>
-                            ) : null}
-                            {doc.action === 'upload' ? (
-                              <label className="btn btn-secondary">
-                                Upload
-                                <input
-                                  type="file"
-                                  onChange={(event) => {
-                                    const file = event.target.files?.[0]
-                                    event.target.value = ''
-                                    if (!file || !window.panel) return
-                                    void file.arrayBuffer().then((buffer) =>
-                                      window.panel
-                                        ?.upload(detail.bidNumber, doc.name, new Uint8Array(buffer), file.name)
-                                        ?.then((ok) => {
-                                          if (ok) void reload()
-                                        }),
-                                    )
-                                  }}
-                                />
-                              </label>
-                            ) : null}
-                          </td>
-                          <td className="end">
-                            {doc.template ? (
-                              <button type="button" className="btn btn-ghost" onClick={() => setTemplateFor(doc.name)}>
-                                Download template
-                              </button>
-                            ) : null}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
-            </section>
+            <DocumentsSection
+              bidNumber={detail.bidNumber}
+              documents={documents}
+              onReload={() => void reload()}
+              onPrepare={setTemplateFor}
+            />
             {templateFor ? (
               <TemplateDialog bidNumber={detail.bidNumber} documentName={templateFor} onClose={() => setTemplateFor(null)} />
             ) : null}
           </>
         ) : null}
       </article>
-    </div>
-  )
-}
-
-function Stat({ value, label, warn }: { value: string; label: string; warn?: boolean }) {
-  return (
-    <div className="stat">
-      <div className={warn ? 'stat-value warn' : 'stat-value'}>{value}</div>
-      <div className="stat-label">{label}</div>
     </div>
   )
 }

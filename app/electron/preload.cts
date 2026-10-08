@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('panel', {
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) =>
     ipcRenderer.invoke('upload', bidNumber, name, data, filename),
   download: (bidNumber: string, name: string) => ipcRenderer.invoke('download', bidNumber, name),
+  exportDocument: (bidNumber: string, name: string) => ipcRenderer.invoke('export-document', bidNumber, name),
   openLocal: (bidNumber: string, name: string) => ipcRenderer.invoke('open-local', bidNumber, name),
   company: () => ipcRenderer.invoke('company'),
   saveCompany: (fields: unknown) => ipcRenderer.invoke('save-company', fields),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('panel', {
   uploadCompanyDocument: (name: string, data: Uint8Array, filename: string) =>
     ipcRenderer.invoke('upload-company-document', name, data, filename),
   downloadCompanyDocument: (name: string) => ipcRenderer.invoke('download-company-document', name),
+  exportCompanyDocument: (name: string) => ipcRenderer.invoke('export-company-document', name),
   openCompanyDocument: (name: string) => ipcRenderer.invoke('open-company-document', name),
   templates: () => ipcRenderer.invoke('templates'),
   templatePlaceholders: () => ipcRenderer.invoke('template-placeholders'),
@@ -29,6 +31,9 @@ contextBridge.exposeInMainWorld('panel', {
   removeTemplate: (id: number) => ipcRenderer.invoke('remove-template', id),
   previewTemplate: (id: number, bidNumber: string) => ipcRenderer.invoke('preview-template', id, bidNumber),
   previewTemplateText: (body: string) => ipcRenderer.invoke('preview-template-text', body),
+  renderTemplate: (id: number, values: Record<string, string>) => ipcRenderer.invoke('render-template', id, values),
+  saveTemplateDocument: (id: number, bidNumber: string, documentName: string, values: Record<string, string>) =>
+    ipcRenderer.invoke('save-template-document', id, bidNumber, documentName, values),
   downloadTemplate: (id: number, bidNumber: string, values: Record<string, string>) =>
     ipcRenderer.invoke('download-template', id, bidNumber, values),
   onRow: (listener: () => void) => {

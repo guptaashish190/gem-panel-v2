@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { readFileSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { copyFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -273,14 +273,20 @@ function register(): void {
     const db = records()
     if (!db || typeof bidNumber !== 'string' || typeof name !== 'string') return false
     const key = await store.storageKey(db, bidNumber, name).catch(() => null)
+    const extension = storedExtension(key)
     return files.deliverMissingFile({
       storedKey: key,
       readStored: (storedKey) => store.readStored(db, storedKey),
       writeLocal: async (bytes) => {
-        await files.writeDocument(dataRoot(), bidNumber, name, bytes)
+        await files.writeDocument(dataRoot(), bidNumber, name, bytes, extension)
       },
-      downloadFromGem: () => Promise.reject(new Error('missing')),
     })
+  })
+
+  ipcMain.handle('export-document', async (event, bidNumber: unknown, name: unknown) => {
+    if (typeof bidNumber !== 'string' || typeof name !== 'string') return 'failed' satisfies TemplateDownload
+    const source = await files.localDocumentPath(dataRoot(), bidNumber, name)
+    return saveCopy(event, source)
   })
 
   ipcMain.handle('company', async () => {
@@ -406,6 +412,52 @@ function register(): void {
     }
   })
 
+  ipcMain.handle('render-template', async (_event, id: unknown, values: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    const checked = templateValuesOf(values)
+    if (!db || templateId == null || !checked) return null
+    try {
+      const template = await store.templateById(db, templateId)
+      if (!template) return null
+      return renderTemplateDocument(template.body, checked)
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('save-template-document', async (_event, id: unknown, bidNumber: unknown, documentName: unknown, values: unknown) => {
+    const db = records()
+    const templateId = idOf(id)
+    const checked = templateValuesOf(values)
+    if (
+      !db ||
+      templateId == null ||
+      typeof bidNumber !== 'string' ||
+      typeof documentName !== 'string' ||
+      !documentName.trim() ||
+      documentName === GEM_PDF_NAME ||
+      !checked
+    ) {
+      return false
+    }
+    try {
+      const template = await store.templateById(db, templateId)
+      if (!template) return false
+      const document = renderTemplateDocument(template.body, checked)
+      const bytes = new Uint8Array(Buffer.from(document, 'utf8'))
+      const extension = '.doc'
+      const storedName = `${files.documentFileName(documentName)}${extension}`
+      const key = `${files.bidDirName(bidNumber)}/${storedName}`
+      await store.uploadStored(db, bidNumber, documentName, key, bytes, 'application/msword')
+      await files.writeDocument(dataRoot(), bidNumber, documentName, bytes, extension)
+      notifyRows()
+      return true
+    } catch {
+      return false
+    }
+  })
+
   ipcMain.handle('download-template', async (event, id: unknown, bidNumber: unknown, values: unknown) => {
     const db = records()
     const templateId = idOf(id)
@@ -430,6 +482,12 @@ function register(): void {
     }
   })
 
+  ipcMain.handle('export-company-document', async (event, name: unknown) => {
+    if (typeof name !== 'string') return 'failed' satisfies TemplateDownload
+    const source = await files.localCompanyDocumentPath(dataRoot(), name)
+    return saveCopy(event, source)
+  })
+
   ipcMain.handle('download-company-document', async (_event, name: unknown) => {
     const db = records()
     if (!db || typeof name !== 'string') return false
@@ -441,7 +499,6 @@ function register(): void {
       writeLocal: async (bytes) => {
         await files.writeCompanyDocument(dataRoot(), name, bytes, extension)
       },
-      downloadFromGem: () => Promise.reject(new Error('missing')),
     })
   })
 }
@@ -462,6 +519,24 @@ function companyFieldsOf(value: unknown): CompanyFields | null {
     signatory: fields.signatory.trim(),
     address: fields.address.trim(),
     drugLicenseNumber: fields.drugLicenseNumber.trim(),
+  }
+}
+
+async function saveCopy(event: IpcMainInvokeEvent, source: string | null): Promise<TemplateDownload> {
+  if (!source) return 'failed'
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const extension = path.extname(source).replace(/^\./, '')
+    const options = {
+      defaultPath: path.basename(source),
+      filters: extension ? [{ name: extension, extensions: [extension] }] : undefined,
+    }
+    const picked = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options)
+    if (picked.canceled || !picked.filePath) return 'cancelled'
+    await copyFile(source, picked.filePath)
+    return 'saved'
+  } catch {
+    return 'failed'
   }
 }
 

@@ -15,7 +15,7 @@ import {
   type TemplatePreview,
   type TextTemplate,
 } from './types.js'
-import { documentIsLocal, fileAction, localCompanyDocumentPath } from './files.js'
+import { documentIsLocal, fileAction, localCompanyDocumentPath, localDocumentFileName } from './files.js'
 import { templateFields, templateValues } from './template.js'
 
 type Query = {
@@ -431,8 +431,8 @@ export async function openTender(
     (documents ?? []).map(async (doc) => {
       const name = doc.name as string
       const stored = Boolean(doc.storage_key)
-      const local = await documentIsLocal(root, bidNumber, name)
-      return { name, action: fileAction(local, stored), template: name !== GEM_PDF_NAME }
+      const filename = await localDocumentFileName(root, bidNumber, name)
+      return { name, filename, action: fileAction(filename != null, stored), template: name !== GEM_PDF_NAME }
     }),
   )
   return {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { TemplateField, TextTemplate } from './panel'
+import { TemplatePreview } from './components/TemplatePreview'
 
 export function TemplateDialog({
   bidNumber,
@@ -16,14 +17,16 @@ export function TemplateDialog({
   const [ready, setReady] = useState(false)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [tab, setTab] = useState<'templates' | 'pdfs'>('templates')
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose()
+      if (event.key === 'Escape' && preview == null) onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, preview])
 
   useEffect(() => {
     let cancel = false
@@ -59,14 +62,49 @@ export function TemplateDialog({
     }
   }, [templateId, bidNumber])
 
+  function fieldValues(): Record<string, string> {
+    return Object.fromEntries(fields.map((field) => [field.key, field.value]))
+  }
+
+  async function onPreview() {
+    const panel = window.panel
+    if (!panel || busy || templateId == null || !ready) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const html = await panel.renderTemplate(templateId, fieldValues())
+      if (html) setPreview(html)
+      else setNotice('Could not preview that template.')
+    } catch {
+      setNotice('Could not preview that template.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onSave() {
+    const panel = window.panel
+    if (!panel || busy || templateId == null || !ready) return
+    setBusy(true)
+    setNotice(null)
+    try {
+      const ok = await panel.saveTemplateDocument(templateId, bidNumber, documentName, fieldValues())
+      if (ok) onClose()
+      else setNotice('Could not save that document.')
+    } catch {
+      setNotice('Could not save that document.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function onDownload() {
     const panel = window.panel
     if (!panel || busy || templateId == null || !ready) return
     setBusy(true)
     setNotice(null)
     try {
-      const values = Object.fromEntries(fields.map((field) => [field.key, field.value]))
-      const result = await panel.downloadTemplate(templateId, bidNumber, values)
+      const result = await panel.downloadTemplate(templateId, bidNumber, fieldValues())
       if (result === 'saved') onClose()
       else if (result === 'failed') setNotice('Could not download that file.')
     } catch {
@@ -79,6 +117,7 @@ export function TemplateDialog({
   const empty = templates != null && templates.length === 0
 
   return (
+    <>
     <div className="modal-back" onMouseDown={onClose}>
       <div
         className="modal"
@@ -87,15 +126,35 @@ export function TemplateDialog({
         aria-labelledby="template-title"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 id="template-title">Template for {documentName}</h2>
-        {templates == null ? <p className="empty">Templates could not be loaded.</p> : null}
-        {empty ? <p className="empty">No templates yet.</p> : null}
-        {templates && templates.length > 0 ? (
+        <h2 id="template-title">Prepare {documentName}</h2>
+        <div className="pills prepare-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'templates'}
+            className={tab === 'templates' ? 'pill active' : 'pill'}
+            onClick={() => setTab('templates')}
+          >
+            Templates
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'pdfs'}
+            className={tab === 'pdfs' ? 'pill active' : 'pill'}
+            onClick={() => setTab('pdfs')}
+          >
+            PDFs
+          </button>
+        </div>
+        {tab === 'templates' && templates == null ? <p className="empty">Templates could not be loaded.</p> : null}
+        {tab === 'templates' && empty ? <p className="empty">No templates yet.</p> : null}
+        {tab === 'templates' && templates && templates.length > 0 ? (
           <form
             className="settings-form modal-form"
             onSubmit={(event) => {
               event.preventDefault()
-              void onDownload()
+              void onSave()
             }}
           >
             <label className="wide">
@@ -133,18 +192,24 @@ export function TemplateDialog({
               <button type="button" className="btn btn-ghost" onClick={onClose}>
                 Close
               </button>
-              <button type="submit" className="btn btn-primary" disabled={busy || !ready}>
+              <button type="button" className="btn btn-secondary" disabled={busy || !ready} onClick={() => void onPreview()}>
+                Preview
+              </button>
+              <button type="button" className="btn btn-secondary" disabled={busy || !ready} onClick={() => void onDownload()}>
                 Download
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={busy || !ready}>
+                Save to document
               </button>
             </div>
           </form>
-        ) : (
+        ) : tab === 'templates' ? (
           <div className="settings-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               Close
             </button>
           </div>
-        )}
+        ) : null}
         {notice ? (
           <p className="form-note" role="status">
             {notice}
@@ -152,6 +217,8 @@ export function TemplateDialog({
         ) : null}
       </div>
     </div>
+    {preview != null ? <TemplatePreview html={preview} onClose={() => setPreview(null)} /> : null}
+    </>
   )
 }
 

@@ -88,6 +88,7 @@ export type TenderSummary = {
 
 export type DocumentView = {
   name: string
+  filename: string | null
   action: 'ready' | 'download' | 'upload'
   template: boolean
 }

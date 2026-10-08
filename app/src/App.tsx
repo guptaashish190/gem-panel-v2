@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FetchProgress, Filters, ScreenName as StoredScreen, Summary, TenderStatus } from './panel'
+import type { FetchProgress, Filters, ScreenName as StoredScreen, Summary } from './panel'
 import { SettingsPanel } from './SettingsPanel'
-import { statusTone } from './status'
+import { ExcelFilter } from './components/ExcelFilter'
+import { RowMenu, type RowMenuState } from './components/RowMenu'
+import { Stat } from './components/Stat'
+import { TenderTable, type FetchStatus, type Shown } from './components/TenderTable'
+import {
+  emdLabel,
+  evaluationValue,
+  listedOptions,
+  matchesBid,
+  matchesFilters,
+  matchesProduct,
+  ministryValue,
+  mseValue,
+  type Picks,
+} from './format'
 
 type ScreenName = StoredScreen | 'all' | 'settings'
 
@@ -25,67 +39,11 @@ const EMPTY_FILTERS: Filters = {
   emd: null,
 }
 
-type Picks = {
-  ministry: string[] | null
-  evaluation: string[] | null
-  mse: string[] | null
-  emd: string[] | null
-}
-
 const EMPTY_PICKS: Picks = {
   ministry: null,
   evaluation: null,
   mse: null,
   emd: null,
-}
-
-function buyer(row: Summary): string {
-  const parts = [row.ministryOrState, row.department].filter((part) => part)
-  return parts.length > 0 ? parts.join(' · ') : '—'
-}
-
-function mseValue(row: Pick<Summary, 'mse'>): string {
-  if (row.mse === true) return 'Yes'
-  if (row.mse === false) return 'No'
-  return '—'
-}
-
-function emdLabel(row: Pick<Summary, 'emdRequired' | 'emdAmount'>): string {
-  if (row.emdRequired === false) return 'Not required'
-  if (row.emdAmount != null) return money(row.emdAmount)
-  if (row.emdRequired === true) return 'Required'
-  return '—'
-}
-
-function money(amount: number | null): string {
-  if (amount == null) return '—'
-  return new Intl.NumberFormat('en-IN', {
-    style: 'currency',
-    currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(amount)
-}
-
-function ministryValue(row: Summary): string {
-  return row.ministryOrState?.trim() || '—'
-}
-
-function evaluationValue(row: Summary): string {
-  const method = row.evaluationMethod?.toLowerCase() ?? ''
-  if (method.includes('item')) return 'Item wise'
-  if (method.includes('total')) return 'Total Value wise'
-  return row.evaluationMethod?.trim() || '—'
-}
-
-function listedOptions(rows: Summary[], value: (row: Summary) => string): string[] {
-  return [...new Set(rows.map(value))].sort((a, b) =>
-    a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true }),
-  )
-}
-
-function allows(selected: string[] | null, value: string | null): boolean {
-  if (selected == null) return true
-  return value != null && selected.includes(value)
 }
 
 type LiveBid = {
@@ -96,36 +54,11 @@ type LiveBid = {
   status: 'downloading' | 'analyzing' | 'downloaded' | 'failed'
 }
 
-type FetchStatus = 'Downloading' | 'Analyzing' | 'Downloaded' | 'Failed'
-
-type Shown = Summary & { fetchStatus: FetchStatus; pending: boolean }
-
 function fetchStatus(status: LiveBid['status'] | undefined): FetchStatus {
   if (status === 'downloading') return 'Downloading'
   if (status === 'analyzing') return 'Analyzing'
   if (status === 'failed') return 'Failed'
   return 'Downloaded'
-}
-
-function matchesFilters(row: Summary, picks: Picks): boolean {
-  return (
-    allows(picks.ministry, ministryValue(row)) &&
-    allows(picks.evaluation, evaluationValue(row)) &&
-    allows(picks.mse, mseValue(row)) &&
-    allows(picks.emd, emdLabel(row))
-  )
-}
-
-function matchesProduct(row: Summary, query: string): boolean {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return true
-  return row.productNames.some((name) => name.toLowerCase().includes(needle))
-}
-
-function matchesBid(row: Summary, query: string): boolean {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return true
-  return row.bidNumber.toLowerCase().includes(needle)
 }
 
 function placeholder(bid: LiveBid): Summary {
@@ -147,15 +80,6 @@ function placeholder(bid: LiveBid): Summary {
     status: null,
     uploadedFiles: [],
   }
-}
-
-type RowMenuState = {
-  x: number
-  y: number
-  bidNumber: string
-  saved: boolean
-  pdf: Summary['pdf']
-  waiting: boolean
 }
 
 function sessionRow(bid: LiveBid, stored: Summary | undefined): Shown {
@@ -488,93 +412,19 @@ export function App() {
             />
           </div>
 
-          <section className="block">
-            <h2>{current.heading}</h2>
-            {poolCount === 0 ? <p className="empty">No tenders yet.</p> : null}
-            {poolCount > 0 && listed.length === 0 ? <p className="empty">No tenders match.</p> : null}
-            {listed.length > 0 ? (
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th className="idx">#</th>
-                      <th>Bid</th>
-                      <th>Status</th>
-                      <th>Fetch</th>
-                      <th>Closes</th>
-                      <th>Buyer</th>
-                      <th>Eval</th>
-                      <th>MSE</th>
-                      <th>EMD</th>
-                      <th className="num">Products</th>
-                      {screen === 'filled' ? <th>Files</th> : null}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {listed.map((row, index) => {
-                      const failed = row.fetchStatus === 'Failed'
-                      const waiting = failed || (row.pending && row.fetchStatus !== 'Downloaded')
-                      return (
-                      <tr
-                        key={row.bidNumber}
-                        className={[waiting ? 'pending' : '', failed ? 'fail' : '', row.saved ? 'saved' : '', !waiting && row.status ? `tone-${statusTone(row.status)}` : '', !failed && !row.pending && row.pdf !== 'ready' ? 'warn' : ''].filter(Boolean).join(' ')}
-                        tabIndex={waiting ? -1 : 0}
-                        onClick={() => {
-                          if (!waiting) openTenderWindow(row.bidNumber)
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          setRowMenu({
-                            x: event.clientX,
-                            y: event.clientY,
-                            bidNumber: row.bidNumber,
-                            saved: row.saved,
-                            pdf: row.pdf,
-                            waiting,
-                          })
-                        }}
-                        onKeyDown={(event) => {
-                          if (waiting || event.target !== event.currentTarget) return
-                          if (event.key !== 'Enter' && event.key !== ' ') return
-                          event.preventDefault()
-                          openTenderWindow(row.bidNumber)
-                        }}
-                      >
-                        <td className="idx">{index + 1}</td>
-                        <td className="bid">{row.bidNumber}</td>
-                        <td className="status">
-                          <StatusMark status={row.status} />
-                        </td>
-                        <td className={failed ? 'status fail' : waiting ? 'status live' : 'status'}>{row.fetchStatus}</td>
-                        <td>{row.bidEnd || '—'}</td>
-                        <td>{buyer(row)}</td>
-                        <td>{evaluationValue(row)}</td>
-                        <td>{mseValue(row)}</td>
-                        <td className={row.emdRequired ? 'warn-text' : ''}>{emdLabel(row)}</td>
-                        <td className="num">{row.pending ? '—' : row.productCount}</td>
-                        {screen === 'filled' ? (
-                          <td className="muted">{row.uploadedFiles.join(', ') || '—'}</td>
-                        ) : null}
-                      </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            ) : null}
-            {screen === 'search' && listKeyword ? (
-              <div className="list-more">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => void onFetchNext()}
-                  disabled={fetching || !hasMore}
-                >
-                  Fetch next page
-                </button>
-              </div>
-            ) : null}
-          </section>
+          <TenderTable
+            heading={current.heading}
+            poolCount={poolCount}
+            rows={listed}
+            showFiles={screen === 'filled'}
+            next={
+              screen === 'search' && listKeyword
+                ? { fetching, hasMore, onFetch: () => void onFetchNext() }
+                : null
+            }
+            onOpen={openTenderWindow}
+            onMenu={setRowMenu}
+          />
           {rowMenu ? (
             <RowMenu
               menu={rowMenu}
@@ -588,198 +438,6 @@ export function App() {
           )}
         </div>
       ) : null}
-    </div>
-  )
-}
-
-function RowMenu({
-  menu,
-  onClose,
-  onOpenPdf,
-  onSavePdf,
-  onDelete,
-}: {
-  menu: RowMenuState
-  onClose: () => void
-  onOpenPdf: () => void
-  onSavePdf: () => void
-  onDelete?: () => void
-}) {
-  const box = useRef<HTMLDivElement>(null)
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - 168))
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - (onDelete ? 128 : 92)))
-
-  useEffect(() => {
-    const first = box.current?.querySelector('button:not(:disabled)')
-    if (first instanceof HTMLButtonElement) first.focus({ preventScroll: true })
-    function onPointer(event: MouseEvent) {
-      if (box.current?.contains(event.target as Node)) return
-      onClose()
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('mousedown', onPointer)
-    document.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', onClose, true)
-    window.addEventListener('resize', onClose)
-    return () => {
-      document.removeEventListener('mousedown', onPointer)
-      document.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', onClose, true)
-      window.removeEventListener('resize', onClose)
-    }
-  }, [onClose])
-
-  return (
-    <div
-      ref={box}
-      className="row-menu"
-      role="menu"
-      style={{ left, top }}
-      aria-label={menu.bidNumber}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <button
-        type="button"
-        role="menuitem"
-        disabled={menu.waiting || menu.pdf === 'upload'}
-        onClick={() => {
-          onClose()
-          onOpenPdf()
-        }}
-      >
-        Open PDF
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        disabled={menu.waiting}
-        onClick={() => {
-          onClose()
-          onSavePdf()
-        }}
-      >
-        {menu.saved ? 'Unsave' : 'Save PDF'}
-      </button>
-      {onDelete ? (
-        <button
-          type="button"
-          role="menuitem"
-          className="danger"
-          disabled={menu.waiting}
-          onClick={() => {
-            onClose()
-            onDelete()
-          }}
-        >
-          Delete
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
-function ExcelFilter({
-  label,
-  options,
-  selected,
-  onChange,
-}: {
-  label: string
-  options: string[]
-  selected: string[] | null
-  onChange: (next: string[] | null) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const box = useRef<HTMLDivElement>(null)
-  const chosen = selected ?? options
-  const allOn = options.length === 0 || options.every((option) => chosen.includes(option))
-  const shown = options.filter((option) => option.toLowerCase().includes(query.trim().toLowerCase()))
-  const caption = allOn ? label : chosen.length === 1 ? chosen[0] : chosen.length === 0 ? 'None' : `${chosen.length} selected`
-
-  useEffect(() => {
-    if (!open) return
-    function onPointer(event: MouseEvent) {
-      if (!box.current?.contains(event.target as Node)) setOpen(false)
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onPointer)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onPointer)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  function toggle(value: string) {
-    const next = new Set(chosen)
-    if (next.has(value)) next.delete(value)
-    else next.add(value)
-    const picked = options.filter((option) => next.has(option))
-    onChange(picked.length === options.length ? null : picked)
-  }
-
-  return (
-    <div className="excel" ref={box}>
-      <button
-        type="button"
-        className={allOn ? 'excel-btn' : 'excel-btn on'}
-        aria-expanded={open}
-        aria-label={label}
-        onClick={() => {
-          setQuery('')
-          setOpen((value) => !value)
-        }}
-      >
-        <span>{caption}</span>
-        <i className="caret" aria-hidden="true" />
-      </button>
-      {open ? (
-        <div className="excel-menu" role="group" aria-label={label}>
-          <input
-            value={query}
-            placeholder="Search"
-            aria-label={`Search ${label}`}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-          <label className="excel-option">
-            <input
-              type="checkbox"
-              checked={allOn}
-              ref={(input) => {
-                if (input) input.indeterminate = !allOn && chosen.length > 0
-              }}
-              onChange={() => onChange(allOn ? [] : null)}
-            />
-            <span>Select all</span>
-          </label>
-          {shown.map((option) => (
-            <label key={option} className="excel-option">
-              <input type="checkbox" checked={chosen.includes(option)} onChange={() => toggle(option)} />
-              <span>{option}</span>
-            </label>
-          ))}
-          {shown.length === 0 ? <p className="excel-empty">No matching values</p> : null}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function StatusMark({ status }: { status: TenderStatus | null }) {
-  if (!status) return '—'
-  return <span className={`status-pill ${statusTone(status)}`}>{status}</span>
-}
-
-function Stat({ value, label, warn }: { value: string; label: string; warn?: boolean }) {
-  return (
-    <div className="stat">
-      <div className={warn ? 'stat-value warn' : 'stat-value'}>{value}</div>
-      <div className="stat-label">{label}</div>
     </div>
   )
 }

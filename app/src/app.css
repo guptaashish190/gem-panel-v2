@@ -118,6 +118,8 @@ button.pill { line-height: 1.3; }
   color: #fff;
 }
 
+.prepare-tabs { margin: 0 0 12px; }
+
 .search-row,
 .filter-row,
 .detail-bar {
@@ -280,6 +282,27 @@ input:focus, select:focus {
 
 .btn-ghost:hover { background: #f4f4f4; }
 
+.btn-icon {
+  width: 32px;
+  padding: 0;
+}
+
+.btn-upload {
+  background: #f3f3f3;
+  color: #3a3a3a;
+  border-color: #e0e0e0;
+}
+
+.btn-upload:hover { background: #e8e8e8; }
+
+.btn-prepare {
+  background: #e8f1fb;
+  color: #1e4b7a;
+  border-color: #c5daf3;
+}
+
+.btn-prepare:hover { background: #d7e6f6; }
+
 .btn input[type="file"] {
   position: absolute;
   width: 1px;
@@ -361,6 +384,9 @@ tbody tr.saved td:first-child { box-shadow: inset 3px 0 0 #5b8ec9; }
 
 tbody tr.warn td,
 tbody tr.warn:hover td { background: #fff8eb; }
+
+tbody tr.ready td,
+tbody tr.ready:hover td { background: #e7f6ec; }
 
 tbody tr.tone-documentation td,
 tbody tr.tone-documentation:hover td { background: #e8f1fb; }
@@ -599,6 +625,26 @@ tbody tr.pending { cursor: default; }
   align-items: center;
   gap: 8px;
 }
+
+.doc-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.doc-actions .btn {
+  text-align: center;
+  border-radius: 0;
+}
+
+.doc-actions .btn + .btn { margin-left: -1px; }
+
+.doc-actions .btn:first-child { border-radius: 8px 0 0 8px; }
+
+.doc-actions .btn:last-child { border-radius: 0 8px 8px 0; }
+
+.doc-actions .btn:only-child { border-radius: 8px; }
 
 .btn-remove { color: #b42318; }
 
