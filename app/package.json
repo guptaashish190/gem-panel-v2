@@ -1,0 +1,29 @@
+{
+  "name": "gem-tender-panel",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "tsc -p tsconfig.electron.json && node --test dist-electron/gem.test.js dist-electron/parse.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.117.3",
+    "pdfjs-dist": "6.4.299",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.6.2",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "6.0.1",
+    "electron": "44.7.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.3"
+  }
+}
