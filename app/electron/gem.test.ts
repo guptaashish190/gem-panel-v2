@@ -60,6 +60,8 @@ function deps(over: Partial<SearchDeps> = {}): SearchDeps {
     listPage: async () => [hit('GEM/2026/B/1', 'listing-1')],
     downloadPdf: async () => pdfBytes,
     hasBid: async () => false,
+    hasLocalPdf: async () => false,
+    linkBid: async () => undefined,
     unsavedCount: async () => 0,
     savePdf: async () => undefined,
     removePdf: async () => undefined,
@@ -115,12 +117,17 @@ test('failed download keeps the bid as failed', async () => {
   assert.deepEqual(events, ['downloading', 'failed'])
 })
 
-test('known bid is shown as downloaded and is not downloaded again', async () => {
+test('known bid with a local pdf is linked and not downloaded again', async () => {
   const events: string[] = []
   let downloads = 0
+  let links = 0
   await searchKeyword(
     deps({
       hasBid: async () => true,
+      hasLocalPdf: async () => true,
+      linkBid: async () => {
+        links += 1
+      },
       downloadPdf: async () => {
         downloads += 1
         return pdfBytes
@@ -134,11 +141,13 @@ test('known bid is shown as downloaded and is not downloaded again', async () =>
   )
   assert.deepEqual(events, ['downloaded'])
   assert.equal(downloads, 0)
+  assert.equal(links, 1)
 })
 
-test('known bid is not downloaded', async () => {
+test('known bid without a local pdf is downloaded and linked, not inserted', async () => {
   let downloads = 0
   let inserts = 0
+  let links = 0
   await searchKeyword(
     deps({
       hasBid: async (bidNumber) => bidNumber === 'GEM/2026/B/1',
@@ -149,12 +158,16 @@ test('known bid is not downloaded', async () => {
       insertTender: async () => {
         inserts += 1
       },
+      linkBid: async () => {
+        links += 1
+      },
     }),
     'gloves',
     1,
   )
-  assert.equal(downloads, 0)
+  assert.equal(downloads, 1)
   assert.equal(inserts, 0)
+  assert.equal(links, 1)
 })
 
 test('new bid is stored only after the pdf is saved and parsed', async () => {
@@ -584,6 +597,7 @@ test('filters show only matching stored rows', () => {
 
 test('screen copy does not name records infrastructure', () => {
   const sources = [
+    '../src/AccountScreen.tsx',
     '../src/App.tsx',
     '../src/SettingsPanel.tsx',
     '../src/TemplateDialog.tsx',

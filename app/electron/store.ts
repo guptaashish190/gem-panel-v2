@@ -14,6 +14,7 @@ import {
   type TenderInsert,
   type TenderSummary,
   type TemplatePreview,
+  type TemplateProductMode,
   type TextTemplate,
 } from './types.js'
 import { documentIsLocal, fileAction, localCompanyDocumentPath, localDocumentFileName } from './files.js'
@@ -50,6 +51,14 @@ export function rowMatchesPredicates(row: Record<string, unknown>, preds: Predic
     if (pred.op === 'eq') return value === pred.value
     return String(value ?? '').toLowerCase().includes(pred.value.toLowerCase())
   })
+}
+
+const TENDER_FILTERS = new Set(['ministry_or_state', 'evaluation_method', 'mse', 'emd_required'])
+
+export function scopedPredicates(preds: Predicate[]): Predicate[] {
+  return preds.map((pred) =>
+    TENDER_FILTERS.has(pred.column) ? { ...pred, column: `tender.${pred.column}` } : pred,
+  )
 }
 
 export function applyPredicates<Q extends Query>(query: Q, preds: Predicate[]): Q {
@@ -167,19 +176,25 @@ function toParsed(row: TenderRecord): ParsedTender {
   }
 }
 
+async function requireUser(client: SupabaseClient): Promise<string> {
+  const { data, error } = await client.auth.getSession()
+  const id = data.session?.user.id
+  if (error || !id) throw new Error('signed out')
+  return id
+}
+
 export async function hasBid(client: SupabaseClient, bidNumber: string): Promise<boolean> {
-  const { count, error } = await client
-    .from('tender')
-    .select('bid_number', { count: 'exact', head: true })
-    .eq('bid_number', bidNumber)
+  const { data, error } = await client.rpc('bid_exists', { target: bidNumber })
   if (error) throw new Error(error.message)
-  return (count ?? 0) > 0
+  return data === true
 }
 
 export async function pagesSearched(client: SupabaseClient, keyword: string): Promise<number> {
+  const user = await requireUser(client)
   const { data, error } = await client
     .from('keyword_cursor')
     .select('pages_searched')
+    .eq('user_id', user)
     .eq('keyword', keyword)
     .maybeSingle()
   if (error) throw new Error(error.message)
@@ -187,19 +202,38 @@ export async function pagesSearched(client: SupabaseClient, keyword: string): Pr
 }
 
 export async function setPagesSearched(client: SupabaseClient, keyword: string, pages: number): Promise<void> {
-  const { error } = await client.from('keyword_cursor').upsert({ keyword, pages_searched: pages })
+  const user = await requireUser(client)
+  const { error } = await client
+    .from('keyword_cursor')
+    .upsert({ user_id: user, keyword, pages_searched: pages }, { onConflict: 'user_id,keyword' })
   if (error) throw new Error(error.message)
 }
 
 export async function savedBidNumbers(client: SupabaseClient): Promise<string[]> {
-  const { data, error } = await client.from('tender').select('bid_number').eq('saved', true)
+  const user = await requireUser(client)
+  const { data, error } = await client.from('user_tender').select('bid_number').eq('user_id', user).eq('saved', true)
   if (error) throw new Error(error.message)
   return (data ?? []).map((row) => row.bid_number as string)
 }
 
+export async function linkBid(client: SupabaseClient, bidNumber: string): Promise<void> {
+  const user = await requireUser(client)
+  const { error } = await client.from('user_tender').upsert(
+    { user_id: user, bid_number: bidNumber },
+    { onConflict: 'user_id,bid_number', ignoreDuplicates: true },
+  )
+  if (error) throw new Error(error.message)
+}
+
 export async function insertTender(client: SupabaseClient, row: TenderInsert): Promise<void> {
   const { error } = await client.from('tender').insert(asRecord(row))
-  if (error) throw new Error(error.message)
+  if (error) {
+    if (error.code === '23505') {
+      await linkBid(client, row.bidNumber)
+      return
+    }
+    throw new Error(error.message)
+  }
   try {
     if (row.products.length > 0) {
       const { error: productError } = await client.from('product').insert(
@@ -221,8 +255,9 @@ export async function insertTender(client: SupabaseClient, row: TenderInsert): P
       })),
     )
     if (documentError) throw new Error(documentError.message)
+    await linkBid(client, row.bidNumber)
   } catch (err) {
-    await client.from('tender').delete().eq('bid_number', row.bidNumber)
+    await client.rpc('remove_orphan_tender', { target: row.bidNumber })
     throw err
   }
 }
@@ -284,18 +319,23 @@ export async function fillParsed(
     if (error) throw new Error(error.message)
   }
   if (parsed.products.length > 0) {
+    const taggedKeys = await taggedProductKeys(client, bidNumber)
     const { error: deleteError } = await client.from('product').delete().eq('bid_number', bidNumber)
     if (deleteError) throw new Error(deleteError.message)
-    const { error: productError } = await client.from('product').insert(
-      parsed.products.map((product) => ({
-        bid_number: bidNumber,
-        name: product.name,
-        quantity: product.quantity,
-        delivery_period: product.deliveryPeriod,
-        schedule_number: product.scheduleNumber,
-      })),
-    )
+    const { data: inserted, error: productError } = await client
+      .from('product')
+      .insert(
+        parsed.products.map((product) => ({
+          bid_number: bidNumber,
+          name: product.name,
+          quantity: product.quantity,
+          delivery_period: product.deliveryPeriod,
+          schedule_number: product.scheduleNumber,
+        })),
+      )
+      .select('id, name, schedule_number')
     if (productError) throw new Error(productError.message)
+    await restoreProductTags(client, taggedKeys, inserted ?? [])
   }
   const { data, error } = await client.from('document').select('name, storage_key').eq('bid_number', bidNumber)
   if (error) throw new Error(error.message)
@@ -321,22 +361,151 @@ export async function fillParsed(
 }
 
 export async function setSaved(client: SupabaseClient, bidNumber: string, saved: boolean): Promise<void> {
-  const { error } = await client.from('tender').update({ saved }).eq('bid_number', bidNumber)
+  const user = await requireUser(client)
+  const { data, error } = await client
+    .from('user_tender')
+    .update({ saved })
+    .eq('user_id', user)
+    .eq('bid_number', bidNumber)
+    .select('bid_number')
   if (error) throw new Error(error.message)
+  if ((data?.length ?? 0) > 0) return
+  const { error: insertError } = await client.from('user_tender').insert({ user_id: user, bid_number: bidNumber, saved })
+  if (insertError) throw new Error(insertError.message)
 }
 
 export async function deleteTender(client: SupabaseClient, bidNumber: string): Promise<void> {
-  const { data, error } = await client.from('document').select('storage_key').eq('bid_number', bidNumber)
+  const user = await requireUser(client)
+  const { data, error } = await client
+    .from('user_document')
+    .select('storage_key')
+    .eq('user_id', user)
+    .eq('bid_number', bidNumber)
   if (error) throw new Error(error.message)
   const keys = (data ?? []).map((row) => row.storage_key as string | null).filter((key): key is string => Boolean(key))
-  const { error: deleteError } = await client.from('tender').delete().eq('bid_number', bidNumber)
-  if (deleteError) throw new Error(deleteError.message)
-  if (keys.length > 0) await client.storage.from(FILE_BUCKET).remove(keys)
+  if (keys.length > 0) {
+    const { error: removeError } = await client.storage.from(FILE_BUCKET).remove(keys)
+    if (removeError) throw new Error(removeError.message)
+  }
+  const { error: fileError } = await client.from('user_document').delete().eq('user_id', user).eq('bid_number', bidNumber)
+  if (fileError) throw new Error(fileError.message)
+  const { error: linkError } = await client.from('user_tender').delete().eq('user_id', user).eq('bid_number', bidNumber)
+  if (linkError) throw new Error(linkError.message)
 }
 
 export async function setStatus(client: SupabaseClient, bidNumber: string, status: TenderStatus | null): Promise<void> {
-  const { error } = await client.from('tender').update({ status }).eq('bid_number', bidNumber)
+  const user = await requireUser(client)
+  const { data, error } = await client
+    .from('user_tender')
+    .update({ status })
+    .eq('user_id', user)
+    .eq('bid_number', bidNumber)
+    .select('bid_number')
   if (error) throw new Error(error.message)
+  if ((data?.length ?? 0) > 0) return
+  const { error: insertError } = await client.from('user_tender').insert({ user_id: user, bid_number: bidNumber, status })
+  if (insertError) throw new Error(insertError.message)
+}
+
+function productTagKey(name: string, scheduleNumber: number | null): string {
+  return `${name}\0${scheduleNumber == null ? '' : String(scheduleNumber)}`
+}
+
+async function taggedProductKeys(
+  client: SupabaseClient,
+  bidNumber: string,
+): Promise<Set<string>> {
+  const user = await requireUser(client)
+  const { data: products, error: productError } = await client
+    .from('product')
+    .select('id, name, schedule_number')
+    .eq('bid_number', bidNumber)
+  if (productError) throw new Error(productError.message)
+  if (!products || products.length === 0) return new Set()
+  const ids = products.map((row) => row.id as number)
+  const { data: tags, error: tagError } = await client
+    .from('user_product_tag')
+    .select('product_id')
+    .eq('user_id', user)
+    .in('product_id', ids)
+  if (tagError) throw new Error(tagError.message)
+  const tagged = new Set((tags ?? []).map((row) => row.product_id as number))
+  const keys = new Set<string>()
+  for (const product of products) {
+    if (!tagged.has(product.id as number)) continue
+    keys.add(productTagKey(product.name as string, (product.schedule_number as number | null) ?? null))
+  }
+  return keys
+}
+
+async function restoreProductTags(
+  client: SupabaseClient,
+  keys: Set<string>,
+  products: { id: number | string; name: string; schedule_number: number | null }[],
+): Promise<void> {
+  if (keys.size === 0 || products.length === 0) return
+  const user = await requireUser(client)
+  const rows = products
+    .filter((product) => keys.has(productTagKey(product.name, product.schedule_number ?? null)))
+    .map((product) => ({ user_id: user, product_id: Number(product.id) }))
+  if (rows.length === 0) return
+  const { error } = await client.from('user_product_tag').upsert(rows)
+  if (error) throw new Error(error.message)
+}
+
+export async function setProductTag(client: SupabaseClient, productId: number, tagged: boolean): Promise<void> {
+  const user = await requireUser(client)
+  const { data: product, error: productError } = await client
+    .from('product')
+    .select('bid_number')
+    .eq('id', productId)
+    .maybeSingle()
+  if (productError) throw new Error(productError.message)
+  if (!product) throw new Error('missing product')
+  const bidNumber = product.bid_number as string
+  const { data: owned } = await client
+    .from('user_tender')
+    .select('bid_number')
+    .eq('user_id', user)
+    .eq('bid_number', bidNumber)
+    .maybeSingle()
+  if (!owned) {
+    const { error: linkError } = await client
+      .from('user_tender')
+      .insert({ user_id: user, bid_number: bidNumber, saved: false })
+    if (linkError) throw new Error(linkError.message)
+  }
+  if (tagged) {
+    const { error } = await client.from('user_product_tag').upsert({ user_id: user, product_id: productId })
+    if (error) throw new Error(error.message)
+    return
+  }
+  const { error } = await client
+    .from('user_product_tag')
+    .delete()
+    .eq('user_id', user)
+    .eq('product_id', productId)
+  if (error) throw new Error(error.message)
+}
+
+type ListedTender = {
+  bid_number: string
+  bid_end: string | null
+  ministry_or_state: string | null
+  department: string | null
+  evaluation_method: string | null
+  mse: boolean | null
+  l1_plus_percent: number | null
+  quantity_percent: number | null
+  emd_required: boolean | null
+  emd_amount: number | null
+  product?: { name: string }[] | null
+}
+
+function oneTender(value: unknown): ListedTender | null {
+  const row = Array.isArray(value) ? value[0] : value
+  if (!row || typeof row !== 'object') return null
+  return row as ListedTender
 }
 
 export async function listTenders(
@@ -345,37 +514,36 @@ export async function listTenders(
   screen: ListScreen,
   filters: ListFilters,
 ): Promise<TenderSummary[]> {
+  const user = await requireUser(client)
   const preds = predicates(screen, filters)
   let query = client
-    .from('tender')
+    .from('user_tender')
     .select(
-      'bid_number, bid_end, ministry_or_state, department, evaluation_method, mse, l1_plus_percent, quantity_percent, emd_required, emd_amount, saved, status, product(name)',
+      'saved, status, tender!inner(bid_number, bid_end, ministry_or_state, department, evaluation_method, mse, l1_plus_percent, quantity_percent, emd_required, emd_amount, product(name))',
     )
-  query = applyPredicates(query as unknown as Query, preds) as unknown as typeof query
+    .eq('user_id', user)
+  query = applyPredicates(query as unknown as Query, scopedPredicates(preds)) as unknown as typeof query
   const { data, error } = await query.order('bid_number')
   if (error) throw new Error(error.message)
-  const rows = (data ?? []) as (Pick<
-    TenderRecord,
-    | 'bid_number'
-    | 'bid_end'
-    | 'ministry_or_state'
-    | 'department'
-    | 'evaluation_method'
-    | 'mse'
-    | 'l1_plus_percent'
-    | 'quantity_percent'
-    | 'emd_required'
-    | 'emd_amount'
-    | 'saved'
-    | 'status'
-  > & { product?: { name: string }[] | null })[]
+  const rows = (data ?? [])
+    .map((row) => {
+      const tender = oneTender((row as { tender?: unknown }).tender)
+      if (!tender) return null
+      return {
+        tender,
+        saved: Boolean((row as { saved?: boolean }).saved),
+        status: ((row as { status?: TenderStatus | null }).status ?? null) as TenderStatus | null,
+      }
+    })
+    .filter((row): row is { tender: ListedTender; saved: boolean; status: TenderStatus | null } => row != null)
   const uploaded = new Map<string, string[]>()
   const storedPdf = new Set<string>()
   if (rows.length > 0) {
-    const bidNumbers = rows.map((row) => row.bid_number)
+    const bidNumbers = rows.map((row) => row.tender.bid_number)
     const { data: pdfs, error: pdfError } = await client
-      .from('document')
+      .from('user_document')
       .select('bid_number, storage_key')
+      .eq('user_id', user)
       .eq('name', GEM_PDF_NAME)
       .in('bid_number', bidNumbers)
     if (pdfError) throw new Error(pdfError.message)
@@ -384,8 +552,9 @@ export async function listTenders(
     }
     if (screen === 'filled') {
       const { data: docs, error: docError } = await client
-        .from('document')
+        .from('user_document')
         .select('bid_number, name, storage_key')
+        .eq('user_id', user)
         .in('bid_number', bidNumbers)
         .not('storage_key', 'is', null)
       if (docError) throw new Error(docError.message)
@@ -400,26 +569,26 @@ export async function listTenders(
   const localPdf = new Map<string, boolean>()
   await Promise.all(
     rows.map(async (row) => {
-      localPdf.set(row.bid_number, await documentIsLocal(root, row.bid_number, GEM_PDF_NAME))
+      localPdf.set(row.tender.bid_number, await documentIsLocal(root, row.tender.bid_number, GEM_PDF_NAME))
     }),
   )
   return rows.map((row) => ({
-    bidNumber: row.bid_number,
-    bidEnd: row.bid_end,
-    ministryOrState: row.ministry_or_state,
-    department: row.department,
-    evaluationMethod: row.evaluation_method,
-    mse: row.mse,
-    l1PlusPercent: row.l1_plus_percent == null ? null : Number(row.l1_plus_percent),
-    quantityPercent: row.quantity_percent == null ? null : Number(row.quantity_percent),
-    emdRequired: row.emd_required,
-    emdAmount: row.emd_amount == null ? null : Number(row.emd_amount),
-    productCount: row.product?.length ?? 0,
-    productNames: (row.product ?? []).map((item) => item.name),
-    pdf: fileAction(localPdf.get(row.bid_number) === true, storedPdf.has(row.bid_number)),
+    bidNumber: row.tender.bid_number,
+    bidEnd: row.tender.bid_end,
+    ministryOrState: row.tender.ministry_or_state,
+    department: row.tender.department,
+    evaluationMethod: row.tender.evaluation_method,
+    mse: row.tender.mse,
+    l1PlusPercent: row.tender.l1_plus_percent == null ? null : Number(row.tender.l1_plus_percent),
+    quantityPercent: row.tender.quantity_percent == null ? null : Number(row.tender.quantity_percent),
+    emdRequired: row.tender.emd_required,
+    emdAmount: row.tender.emd_amount == null ? null : Number(row.tender.emd_amount),
+    productCount: row.tender.product?.length ?? 0,
+    productNames: (row.tender.product ?? []).map((item) => item.name),
+    pdf: fileAction(localPdf.get(row.tender.bid_number) === true, storedPdf.has(row.tender.bid_number)),
     saved: row.saved,
     status: row.status,
-    uploadedFiles: uploaded.get(row.bid_number) ?? [],
+    uploadedFiles: uploaded.get(row.tender.bid_number) ?? [],
   }))
 }
 
@@ -428,49 +597,83 @@ export async function openTender(
   root: string,
   bidNumber: string,
 ): Promise<TenderDetail | null> {
-  const [tenderResult, productResult, documentResult] = await Promise.all([
+  const user = await requireUser(client)
+  const [tenderResult, productResult, documentResult, ownedResult, fileResult] = await Promise.all([
     client.from('tender').select('*').eq('bid_number', bidNumber).maybeSingle(),
     client
       .from('product')
-      .select('name, quantity, delivery_period, schedule_number')
+      .select('id, name, quantity, delivery_period, schedule_number')
       .eq('bid_number', bidNumber)
       .order('id'),
-    client.from('document').select('name, storage_key').eq('bid_number', bidNumber).order('id'),
+    client.from('document').select('name').eq('bid_number', bidNumber).order('id'),
+    client.from('user_tender').select('saved, status').eq('user_id', user).eq('bid_number', bidNumber).maybeSingle(),
+    client.from('user_document').select('name, storage_key').eq('user_id', user).eq('bid_number', bidNumber),
   ])
   if (tenderResult.error) throw new Error(tenderResult.error.message)
   if (productResult.error) throw new Error(productResult.error.message)
   if (documentResult.error) throw new Error(documentResult.error.message)
+  if (ownedResult.error) throw new Error(ownedResult.error.message)
+  if (fileResult.error) throw new Error(fileResult.error.message)
   if (!tenderResult.data) return null
   const row = tenderResult.data as TenderRecord
-  const products = productResult.data
-  const documents = documentResult.data
+  const products = productResult.data ?? []
+  const productIds = products.map((product) => product.id as number)
+  const tagged = new Set<number>()
+  if (productIds.length > 0) {
+    const { data: tags, error: tagError } = await client
+      .from('user_product_tag')
+      .select('product_id')
+      .eq('user_id', user)
+      .in('product_id', productIds)
+    if (tagError) throw new Error(tagError.message)
+    for (const tag of tags ?? []) tagged.add(tag.product_id as number)
+  }
+  const stored = new Map<string, boolean>()
+  for (const file of fileResult.data ?? []) {
+    stored.set(file.name as string, Boolean(file.storage_key))
+  }
+  const names: string[] = []
+  for (const doc of documentResult.data ?? []) {
+    const name = doc.name as string
+    if (!names.some((existing) => existing.toLowerCase() === name.toLowerCase())) names.push(name)
+  }
+  for (const name of stored.keys()) {
+    if (!names.some((existing) => existing.toLowerCase() === name.toLowerCase())) names.push(name)
+  }
   const views: DocumentView[] = await Promise.all(
-    (documents ?? []).map(async (doc) => {
-      const name = doc.name as string
-      const stored = Boolean(doc.storage_key)
+    names.map(async (name) => {
       const filename = await localDocumentFileName(root, bidNumber, name)
-      return { name, filename, action: fileAction(filename != null, stored), template: name !== GEM_PDF_NAME }
+      return {
+        name,
+        filename,
+        action: fileAction(filename != null, stored.get(name) === true),
+        template: name !== GEM_PDF_NAME,
+      }
     }),
   )
   return {
     ...toParsed(row),
     bidNumber: row.bid_number,
-    saved: row.saved,
-    status: row.status,
-    products: (products ?? []).map((product) => ({
+    saved: ownedResult.data?.saved === true,
+    status: (ownedResult.data?.status as TenderStatus | null) ?? null,
+    products: products.map((product) => ({
+      id: product.id as number,
       name: product.name as string,
       quantity: product.quantity == null ? null : Number(product.quantity),
       deliveryPeriod: (product.delivery_period as string | null) ?? null,
       scheduleNumber: (product.schedule_number as number | null) ?? null,
+      tagged: tagged.has(product.id as number),
     })),
     documents: views,
   }
 }
 
 export async function storageKey(client: SupabaseClient, bidNumber: string, name: string): Promise<string | null> {
+  const user = await requireUser(client)
   const { data, error } = await client
-    .from('document')
+    .from('user_document')
     .select('storage_key')
+    .eq('user_id', user)
     .eq('bid_number', bidNumber)
     .eq('name', name)
     .maybeSingle()
@@ -492,20 +695,23 @@ export async function uploadStored(
   bytes: Uint8Array,
   contentType: string,
 ): Promise<void> {
+  const user = await requireUser(client)
+  const previous = await storageKey(client, bidNumber, name)
   const { error } = await client.storage.from(FILE_BUCKET).upload(key, bytes, { upsert: true, contentType })
   if (error) throw new Error(error.message)
-  const { error: updateError } = await client
-    .from('document')
-    .update({ storage_key: key })
-    .eq('bid_number', bidNumber)
-    .eq('name', name)
+  if (previous && previous !== key) await client.storage.from(FILE_BUCKET).remove([previous])
+  const { error: updateError } = await client.from('user_document').upsert(
+    { user_id: user, bid_number: bidNumber, name, storage_key: key },
+    { onConflict: 'user_id,bid_number,name' },
+  )
   if (updateError) throw new Error(updateError.message)
 }
 
 export async function loadCompany(client: SupabaseClient, root: string): Promise<CompanyProfile> {
+  const user = await requireUser(client)
   const [companyResult, documentResult] = await Promise.all([
-    client.from('company').select('*').eq('id', 1).maybeSingle(),
-    client.from('company_document').select('name, storage_key').order('id'),
+    client.from('company').select('*').eq('user_id', user).maybeSingle(),
+    client.from('company_document').select('name, storage_key').eq('user_id', user).order('id'),
   ])
   if (companyResult.error) throw new Error(companyResult.error.message)
   if (documentResult.error) throw new Error(documentResult.error.message)
@@ -538,7 +744,8 @@ export function storedLogo(value: unknown): string {
 
 export async function companyLogo(client: SupabaseClient): Promise<string> {
   try {
-    const { data, error } = await client.from('company').select('logo').eq('id', 1).maybeSingle()
+    const user = await requireUser(client)
+    const { data, error } = await client.from('company').select('logo').eq('user_id', user).maybeSingle()
     if (error) return ''
     return storedLogo(data?.logo)
   } catch {
@@ -564,9 +771,10 @@ export function storedCompanyFields(value: unknown): CompanyField[] {
 }
 
 export async function saveCompany(client: SupabaseClient, fields: CompanyFields): Promise<void> {
+  const user = await requireUser(client)
   const { error } = await client.from('company').upsert(
     {
-      id: 1,
+      user_id: user,
       name: fields.name,
       authorized_signatory: fields.signatory,
       address: fields.address,
@@ -578,7 +786,7 @@ export async function saveCompany(client: SupabaseClient, fields: CompanyFields)
       logo: fields.logo,
       fields: fields.fields.map((field) => ({ key: field.key, label: field.label, value: field.value })),
     },
-    { onConflict: 'id' },
+    { onConflict: 'user_id' },
   )
   if (error) throw new Error(error.message)
 }
@@ -586,11 +794,14 @@ export async function saveCompany(client: SupabaseClient, fields: CompanyFields)
 export async function addCompanyDocument(client: SupabaseClient, name: string): Promise<boolean> {
   const trimmed = name.trim()
   if (!trimmed) return false
-  const { data, error } = await client.from('company_document').select('name')
+  const user = await requireUser(client)
+  const { data, error } = await client.from('company_document').select('name').eq('user_id', user)
   if (error) throw new Error(error.message)
   const taken = (data ?? []).some((row) => (row.name as string).toLowerCase() === trimmed.toLowerCase())
   if (taken) return false
-  const { error: insertError } = await client.from('company_document').insert({ name: trimmed, storage_key: null })
+  const { error: insertError } = await client
+    .from('company_document')
+    .insert({ user_id: user, name: trimmed, storage_key: null })
   if (insertError) {
     if (insertError.code === '23505') return false
     throw new Error(insertError.message)
@@ -599,16 +810,23 @@ export async function addCompanyDocument(client: SupabaseClient, name: string): 
 }
 
 export async function companyStorageKey(client: SupabaseClient, name: string): Promise<string | null> {
-  const { data, error } = await client.from('company_document').select('storage_key').eq('name', name).maybeSingle()
+  const user = await requireUser(client)
+  const { data, error } = await client
+    .from('company_document')
+    .select('storage_key')
+    .eq('user_id', user)
+    .eq('name', name)
+    .maybeSingle()
   if (error) throw new Error(error.message)
   return (data?.storage_key as string | null) ?? null
 }
 
 export async function removeCompanyDocument(client: SupabaseClient, name: string): Promise<void> {
+  const user = await requireUser(client)
   const key = await companyStorageKey(client, name)
-  const { error } = await client.from('company_document').delete().eq('name', name)
-  if (error) throw new Error(error.message)
   if (key) await client.storage.from(FILE_BUCKET).remove([key])
+  const { error } = await client.from('company_document').delete().eq('user_id', user).eq('name', name)
+  if (error) throw new Error(error.message)
 }
 
 export async function uploadCompanyStored(
@@ -618,11 +836,15 @@ export async function uploadCompanyStored(
   bytes: Uint8Array,
   contentType: string,
 ): Promise<void> {
+  const user = await requireUser(client)
+  const previous = await companyStorageKey(client, name)
   const { error } = await client.storage.from(FILE_BUCKET).upload(key, bytes, { upsert: true, contentType })
   if (error) throw new Error(error.message)
+  if (previous && previous !== key) await client.storage.from(FILE_BUCKET).remove([previous])
   const { data, error: updateError } = await client
     .from('company_document')
     .update({ storage_key: key })
+    .eq('user_id', user)
     .eq('name', name)
     .select('name')
   if (updateError) throw new Error(updateError.message)
@@ -634,13 +856,20 @@ function asTemplate(row: { id: number | string; name: string; body: string | nul
 }
 
 export async function listTemplates(client: SupabaseClient): Promise<TextTemplate[]> {
-  const { data, error } = await client.from('template').select('id, name, body').order('name')
+  const user = await requireUser(client)
+  const { data, error } = await client.from('template').select('id, name, body').eq('user_id', user).order('name')
   if (error) throw new Error(error.message)
   return (data ?? []).map((row) => asTemplate(row as { id: number; name: string; body: string | null }))
 }
 
 export async function templateById(client: SupabaseClient, id: number): Promise<TextTemplate | null> {
-  const { data, error } = await client.from('template').select('id, name, body').eq('id', id).maybeSingle()
+  const user = await requireUser(client)
+  const { data, error } = await client
+    .from('template')
+    .select('id, name, body')
+    .eq('user_id', user)
+    .eq('id', id)
+    .maybeSingle()
   if (error) throw new Error(error.message)
   if (!data) return null
   return asTemplate(data as { id: number; name: string; body: string | null })
@@ -652,14 +881,15 @@ export async function saveTemplate(
 ): Promise<boolean> {
   const name = fields.name.trim()
   if (!name) return false
-  const { data, error } = await client.from('template').select('id, name')
+  const user = await requireUser(client)
+  const { data, error } = await client.from('template').select('id, name').eq('user_id', user)
   if (error) throw new Error(error.message)
   const taken = (data ?? []).some(
     (row) => (row.name as string).toLowerCase() === name.toLowerCase() && Number(row.id) !== fields.id,
   )
   if (taken) return false
   if (fields.id == null) {
-    const { error: insertError } = await client.from('template').insert({ name, body: fields.body })
+    const { error: insertError } = await client.from('template').insert({ user_id: user, name, body: fields.body })
     if (insertError) {
       if (insertError.code === '23505') return false
       throw new Error(insertError.message)
@@ -669,6 +899,7 @@ export async function saveTemplate(
   const { data: updated, error: updateError } = await client
     .from('template')
     .update({ name, body: fields.body })
+    .eq('user_id', user)
     .eq('id', fields.id)
     .select('id')
   if (updateError) {
@@ -679,7 +910,8 @@ export async function saveTemplate(
 }
 
 export async function removeTemplate(client: SupabaseClient, id: number): Promise<void> {
-  const { error } = await client.from('template').delete().eq('id', id)
+  const user = await requireUser(client)
+  const { error } = await client.from('template').delete().eq('user_id', user).eq('id', id)
   if (error) throw new Error(error.message)
 }
 
@@ -688,18 +920,25 @@ export async function previewTemplate(
   root: string,
   id: number,
   bidNumber: string,
+  products: TemplateProductMode = 'tagged',
 ): Promise<TemplatePreview | null> {
   const template = await templateById(client, id)
   if (!template) return null
   const [company, tender] = await Promise.all([loadCompany(client, root), openTender(client, root, bidNumber)])
   if (!tender) return null
+  const taggedProducts = tender.products.filter((product) => product.tagged)
+  const useTagged = products === 'tagged' && taggedProducts.length > 0
+  const selected = useTagged ? taggedProducts : tender.products
   return {
     id: template.id,
     name: template.name,
     fields: templateFields(
       template.body,
-      templateValues(company, tender),
+      templateValues(company, { ...tender, products: selected }),
       companyFieldLabels(company.fields),
     ),
+    productMode: useTagged ? 'tagged' : 'all',
+    taggedProductCount: taggedProducts.length,
+    totalProductCount: tender.products.length,
   }
 }

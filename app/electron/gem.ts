@@ -32,6 +32,8 @@ export type SearchDeps = {
   listPage: (keyword: string, page: number) => Promise<ListingHit[] | ListingPage>
   downloadPdf: (listingId: string) => Promise<Uint8Array>
   hasBid: (bidNumber: string) => Promise<boolean>
+  hasLocalPdf: (bidNumber: string) => Promise<boolean>
+  linkBid: (bidNumber: string) => Promise<void>
   unsavedCount: () => Promise<number>
   savePdf: (bidNumber: string, bytes: Uint8Array) => Promise<void>
   removePdf: (bidNumber: string) => Promise<void>
@@ -171,12 +173,58 @@ function reportBid(deps: SearchDeps, hit: ListingHit, status: 'downloading' | 'a
   })
 }
 
-async function ingestOne(deps: SearchDeps, hit: ListingHit, slots: Slots): Promise<'done' | 'retry'> {
-  if (!hit.bidNumber || !hit.listingId) return 'done'
-  if (await deps.hasBid(hit.bidNumber)) {
+function attachedRow(hit: ListingHit, pdf: TenderSummary['pdf']): TenderSummary {
+  return {
+    bidNumber: hit.bidNumber,
+    bidEnd: hit.bidEnd,
+    ministryOrState: hit.ministry,
+    department: hit.department,
+    evaluationMethod: null,
+    mse: null,
+    l1PlusPercent: null,
+    quantityPercent: null,
+    emdRequired: null,
+    emdAmount: null,
+    productCount: 0,
+    productNames: [],
+    pdf,
+    saved: false,
+    status: null,
+    uploadedFiles: [],
+  }
+}
+
+async function attachExisting(deps: SearchDeps, hit: ListingHit, slots: Slots): Promise<'done' | 'retry'> {
+  if (await deps.hasLocalPdf(hit.bidNumber)) {
+    try {
+      await deps.linkBid(hit.bidNumber)
+    } catch {
+      reportBid(deps, hit, 'failed')
+      return 'done'
+    }
+    deps.onRow?.(attachedRow(hit, 'ready'))
     reportBid(deps, hit, 'downloaded')
     return 'done'
   }
+  if (!slots.take()) return 'retry'
+  reportBid(deps, hit, 'downloading')
+  try {
+    const bytes = await deps.downloadPdf(hit.listingId)
+    await deps.savePdf(hit.bidNumber, bytes)
+    await deps.linkBid(hit.bidNumber)
+  } catch {
+    slots.release()
+    reportBid(deps, hit, 'failed')
+    return 'done'
+  }
+  deps.onRow?.(attachedRow(hit, 'ready'))
+  reportBid(deps, hit, 'downloaded')
+  return 'done'
+}
+
+async function ingestOne(deps: SearchDeps, hit: ListingHit, slots: Slots): Promise<'done' | 'retry'> {
+  if (!hit.bidNumber || !hit.listingId) return 'done'
+  if (await deps.hasBid(hit.bidNumber)) return attachExisting(deps, hit, slots)
   if (!slots.take()) return 'retry'
   reportBid(deps, hit, 'downloading')
   let bytes: Uint8Array

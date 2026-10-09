@@ -47,6 +47,7 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
   const [missing, setMissing] = useState(false)
   const [templateFor, setTemplateFor] = useState<string | null>(null)
   const [reanalyze, setReanalyze] = useState<'idle' | 'running' | 'failed'>('idle')
+  const [signedOut, setSignedOut] = useState(false)
   const request = useRef(0)
 
   const reload = useCallback(async () => {
@@ -74,13 +75,24 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
     const stopRow = panel.onRow(() => {
       void reload()
     })
+    const stopSession = panel.onSession(() => {
+      void panel.session().then((next) => {
+        setSignedOut(next == null)
+        if (next) void reload()
+      })
+    })
+    void panel.session().then((next) => {
+      if (!cancel) setSignedOut(next == null)
+    })
     return () => {
       cancel = true
       stopRow()
+      stopSession()
     }
   }, [bidNumber, reload])
 
   const schedule = detail?.products.some((product) => product.scheduleNumber != null) ?? false
+  const taggedCount = detail?.products.filter((product) => product.tagged).length ?? 0
   const documents = detail ? tenderDocuments(detail) : []
   const pdf = detail ? gemPdf(detail) : undefined
   const emd = detail ? emdStat(detail) : null
@@ -88,6 +100,7 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
   return (
     <div className="app">
       {blocked ? <p className="banner">{blocked}</p> : null}
+      {signedOut ? <p className="banner">Sign in from the main window.</p> : null}
       {reanalyze === 'failed' ? (
         <p className="banner">Could not reanalyze: the GeM PDF for this tender is not available or could not be read.</p>
       ) : null}
@@ -231,7 +244,10 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
             </section>
 
             <section className="block">
-              <h2>Products · {detail.products.length}</h2>
+              <h2>
+                Products · {detail.products.length}
+                {taggedCount > 0 ? ` · ${taggedCount} tagged` : ''}
+              </h2>
               {detail.products.length === 0 ? (
                 <p className="empty">No products on this tender.</p>
               ) : (
@@ -239,6 +255,7 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
                   <table>
                     <thead>
                       <tr>
+                        <th className="product-tag-col" />
                         {schedule ? <th className="num">Schedule</th> : null}
                         <th>Name</th>
                         <th className="num">Qty</th>
@@ -247,7 +264,29 @@ export function TenderWindow({ bidNumber }: { bidNumber: string }) {
                     </thead>
                     <tbody>
                       {detail.products.map((product, index) => (
-                        <tr key={`${product.name}-${product.scheduleNumber ?? index}`}>
+                        <tr
+                          key={`${product.id}-${product.name}-${product.scheduleNumber ?? index}`}
+                          className={product.tagged ? 'product-tagged' : undefined}
+                        >
+                          <td className="product-tag-col">
+                            <button
+                              type="button"
+                              className={
+                                product.tagged ? 'btn btn-ghost btn-icon product-tag active' : 'btn btn-ghost btn-icon product-tag'
+                              }
+                              aria-label={product.tagged ? 'Untag product' : 'Tag product'}
+                              aria-pressed={product.tagged}
+                              onClick={() => {
+                                const panel = window.panel
+                                if (!panel) return
+                                void panel.setProductTag(product.id, !product.tagged).then((ok) => {
+                                  if (ok) void reload()
+                                })
+                              }}
+                            >
+                              <TagIcon filled={product.tagged} />
+                            </button>
+                          </td>
                           {schedule ? <td className="num">{show(product.scheduleNumber)}</td> : null}
                           <td>{product.name}</td>
                           <td className="num">{show(product.quantity)}</td>
@@ -282,5 +321,20 @@ function Field({ label, value }: { label: string; value: string }) {
       <div className="fact-label">{label}</div>
       <div className="fact-value">{value}</div>
     </div>
+  )
+}
+
+function TagIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="M2.5 2.5h5.2L13.5 8.3a1.2 1.2 0 0 1 0 1.7l-3.5 3.5a1.2 1.2 0 0 1-1.7 0L2.5 7.7V2.5Z"
+        fill={filled ? 'currentColor' : 'none'}
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+      <circle cx="5.25" cy="5.25" r="1" fill={filled ? '#fff' : 'currentColor'} />
+    </svg>
   )
 }

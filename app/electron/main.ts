@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { copyFile, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js'
 import { createLister, searchKeyword } from './gem.js'
 import * as files from './files.js'
 import { parsePdf } from './parse.js'
@@ -34,7 +34,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 type AppConfig = {
   gemBaseUrl: string
   supabaseUrl: string
-  supabaseServiceKey: string
+  supabaseAnonKey: string
 }
 
 function configFilePath(): string {
@@ -46,14 +46,14 @@ function loadConfig(): AppConfig {
   const fallback: AppConfig = {
     gemBaseUrl: 'https://bidplus.gem.gov.in',
     supabaseUrl: '',
-    supabaseServiceKey: '',
+    supabaseAnonKey: '',
   }
   try {
     const raw = JSON.parse(readFileSync(configFilePath(), 'utf8')) as Partial<AppConfig>
     return {
       gemBaseUrl: raw.gemBaseUrl?.trim() || fallback.gemBaseUrl,
       supabaseUrl: raw.supabaseUrl?.trim() ?? '',
-      supabaseServiceKey: raw.supabaseServiceKey?.trim() ?? '',
+      supabaseAnonKey: raw.supabaseAnonKey?.trim() ?? '',
     }
   } catch {
     return fallback
@@ -63,28 +63,116 @@ function loadConfig(): AppConfig {
 const config = loadConfig()
 
 function recordsConfig(): { url: string; key: string } | null {
-  if (!config.supabaseUrl || !config.supabaseServiceKey) return null
-  return { url: config.supabaseUrl, key: config.supabaseServiceKey }
+  if (!config.supabaseUrl || !config.supabaseAnonKey) return null
+  return { url: config.supabaseUrl, key: config.supabaseAnonKey }
 }
 
 let client: SupabaseClient | null = null
+let userId: string | null = null
+let authCache: Record<string, string> | null = null
 
-function records(): SupabaseClient | null {
-  const config = recordsConfig()
-  if (!config) {
+function authFile(): string {
+  return path.join(app.getPath('userData'), 'auth-session.json')
+}
+
+function readAuthCache(): Record<string, string> {
+  if (authCache) return authCache
+  try {
+    const parsed = JSON.parse(readFileSync(authFile(), 'utf8')) as unknown
+    authCache =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {}
+  } catch {
+    authCache = {}
+  }
+  return authCache
+}
+
+function writeAuthCache(): void {
+  if (!authCache) return
+  void writeFile(authFile(), JSON.stringify(authCache)).catch(() => undefined)
+}
+
+const authStorage = {
+  getItem(key: string) {
+    const value = readAuthCache()[key]
+    return typeof value === 'string' ? value : null
+  },
+  setItem(key: string, value: string) {
+    readAuthCache()[key] = value
+    writeAuthCache()
+  },
+  removeItem(key: string) {
+    delete readAuthCache()[key]
+    writeAuthCache()
+  },
+}
+
+function accountClient(): SupabaseClient | null {
+  const next = recordsConfig()
+  if (!next) {
     client = null
+    userId = null
     return null
   }
   if (!client) {
-    client = createClient(config.url, config.key, {
-      auth: { persistSession: false, autoRefreshToken: false },
+    client = createClient(next.url, next.key, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+        storage: authStorage,
+      },
+    })
+    client.auth.onAuthStateChange((_event, session) => {
+      userId = session?.user.id ?? null
+      notifySession()
     })
   }
   return client
 }
 
+function records(): SupabaseClient | null {
+  const db = accountClient()
+  if (!db || !userId) return null
+  return db
+}
+
+function applySession(session: Session | null): void {
+  userId = session?.user.id ?? null
+}
+
+async function refreshUser(): Promise<void> {
+  const db = accountClient()
+  if (!db) {
+    userId = null
+    return
+  }
+  const { data } = await db.auth.getSession()
+  applySession(data.session)
+}
+
 function dataRoot(): string {
-  return app.getPath('userData')
+  const base = app.getPath('userData')
+  if (!userId) return base
+  return path.join(base, 'accounts', userId)
+}
+
+function storedObjectKey(parts: string[]): string | null {
+  if (!userId) return null
+  return [userId, ...parts].join('/')
+}
+
+function notifySession(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('session-changed')
+  }
+}
+
+function authMessage(email: unknown, password: unknown): { email: string; password: string } | string {
+  if (typeof email !== 'string' || typeof password !== 'string' || !email.trim() || !password) {
+    return 'Enter an email and a password.'
+  }
+  return { email: email.trim(), password }
 }
 
 const lister = createLister(fetch, config.gemBaseUrl)
@@ -146,8 +234,50 @@ function loadApp(win: BrowserWindow, bidNumber?: string): void {
 
 function register(): void {
   ipcMain.handle('reachable', () => {
-    if (!records()) return { ok: false as const, message: UNREACHABLE }
+    if (!recordsConfig()) return { ok: false as const, message: UNREACHABLE }
     return { ok: true as const }
+  })
+
+  ipcMain.handle('session', async () => {
+    const db = accountClient()
+    if (!db) return null
+    const { data } = await db.auth.getSession()
+    applySession(data.session)
+    const email = data.session?.user.email
+    if (!data.session?.user.id || !email) return null
+    return { email }
+  })
+
+  ipcMain.handle('sign-in', async (_event, email: unknown, password: unknown) => {
+    const db = accountClient()
+    const fields = authMessage(email, password)
+    if (!db || typeof fields === 'string') return { ok: false as const, message: typeof fields === 'string' ? fields : 'Those details were not accepted.' }
+    const { data, error } = await db.auth.signInWithPassword(fields)
+    if (error || !data.session) return { ok: false as const, message: 'Those details were not accepted.' }
+    applySession(data.session)
+    void repairParsed()
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('sign-up', async (_event, email: unknown, password: unknown) => {
+    const db = accountClient()
+    const fields = authMessage(email, password)
+    if (!db || typeof fields === 'string') {
+      return { ok: false as const, message: typeof fields === 'string' ? fields : 'That account could not be created.' }
+    }
+    const { data, error } = await db.auth.signUp(fields)
+    if (error) return { ok: false as const, message: 'That account could not be created.' }
+    if (!data.session) return { ok: false as const, message: 'Check your email, then sign in.' }
+    applySession(data.session)
+    void repairParsed()
+    return { ok: true as const }
+  })
+
+  ipcMain.handle('sign-out', async () => {
+    const db = accountClient()
+    userId = null
+    if (db) await db.auth.signOut()
+    notifySession()
   })
 
   ipcMain.handle('list', async (_event, screen: unknown, filters: unknown) => {
@@ -167,6 +297,7 @@ function register(): void {
         : 1
     if (!db || !trimmed) return { started: false }
     const sender = event.sender
+    const root = dataRoot()
     fetchesRunning += 1
     fetchChain = fetchChain
       .then(() =>
@@ -177,9 +308,11 @@ function register(): void {
             listPage: (key, page) => lister.listPage(key, page),
             downloadPdf: (listingId) => lister.downloadPdf(listingId),
             hasBid: (bidNumber) => store.hasBid(db, bidNumber),
-            unsavedCount: async () => files.countUnsaved(dataRoot(), await store.savedBidNumbers(db)),
-            savePdf: (bidNumber, bytes) => files.writeGemPdf(dataRoot(), bidNumber, bytes),
-            removePdf: (bidNumber) => files.removeGemPdf(dataRoot(), bidNumber),
+            hasLocalPdf: (bidNumber) => files.documentIsLocal(root, bidNumber, GEM_PDF_NAME),
+            linkBid: (bidNumber) => store.linkBid(db, bidNumber),
+            unsavedCount: async () => files.countUnsaved(root, await store.savedBidNumbers(db)),
+            savePdf: (bidNumber, bytes) => files.writeGemPdf(root, bidNumber, bytes),
+            removePdf: (bidNumber) => files.removeGemPdf(root, bidNumber),
             parsePdf,
             insertTender: (row) => store.insertTender(db, row),
             onRow: () => {
@@ -220,7 +353,8 @@ function register(): void {
     await store.setSaved(db, bidNumber, true)
     const bytes = await files.readGemPdf(dataRoot(), bidNumber)
     if (bytes) {
-      const key = `${files.bidDirName(bidNumber)}/gem.pdf`
+      const key = storedObjectKey([files.bidDirName(bidNumber), 'gem.pdf'])
+      if (!key) return false
       void store.uploadStored(db, bidNumber, GEM_PDF_NAME, key, bytes, 'application/pdf').catch(() => undefined)
     }
     notifyRows()
@@ -277,6 +411,19 @@ function register(): void {
     return true
   })
 
+  ipcMain.handle('set-product-tag', async (_event, productId: unknown, tagged: unknown) => {
+    const db = records()
+    const id = idOf(productId)
+    if (!db || id == null || typeof tagged !== 'boolean') return false
+    try {
+      await store.setProductTag(db, id, tagged)
+      notifyRows()
+      return true
+    } catch {
+      return false
+    }
+  })
+
   ipcMain.handle('upload', async (_event, bidNumber: unknown, name: unknown, data: unknown, filename: unknown) => {
     const db = records()
     if (!db || typeof bidNumber !== 'string' || typeof name !== 'string' || name === GEM_PDF_NAME) return false
@@ -284,7 +431,8 @@ function register(): void {
     if (!bytes) return false
     const extension = extensionOf(filename)
     const storedName = extension ? `${files.documentFileName(name)}${extension}` : files.documentFileName(name)
-    const key = `${files.bidDirName(bidNumber)}/${storedName}`
+    const key = storedObjectKey([files.bidDirName(bidNumber), storedName])
+    if (!key) return false
     try {
       await store.uploadStored(db, bidNumber, name, key, bytes, contentType(extension))
       await files.writeDocument(dataRoot(), bidNumber, name, bytes, extension)
@@ -373,7 +521,8 @@ function register(): void {
     if (!bytes) return false
     const extension = extensionOf(filename)
     const storedName = extension ? `${files.documentFileName(name)}${extension}` : files.documentFileName(name)
-    const key = `company/${storedName}`
+    const key = storedObjectKey(['company', storedName])
+    if (!key) return false
     try {
       await store.uploadCompanyStored(db, name, key, bytes, contentType(extension))
       await files.writeCompanyDocument(dataRoot(), name, bytes, extension)
@@ -450,12 +599,13 @@ function register(): void {
     }
   })
 
-  ipcMain.handle('preview-template', async (_event, id: unknown, bidNumber: unknown) => {
+  ipcMain.handle('preview-template', async (_event, id: unknown, bidNumber: unknown, products: unknown) => {
     const db = records()
     const templateId = idOf(id)
+    const mode = products === 'all' || products === 'tagged' ? products : 'tagged'
     if (!db || templateId == null || typeof bidNumber !== 'string') return null
     try {
-      return await store.previewTemplate(db, dataRoot(), templateId, bidNumber)
+      return await store.previewTemplate(db, dataRoot(), templateId, bidNumber, mode)
     } catch {
       return null
     }
@@ -497,7 +647,8 @@ function register(): void {
       const bytes = new Uint8Array(Buffer.from(document, 'utf8'))
       const extension = '.doc'
       const storedName = `${files.documentFileName(documentName)}${extension}`
-      const key = `${files.bidDirName(bidNumber)}/${storedName}`
+      const key = storedObjectKey([files.bidDirName(bidNumber), storedName])
+      if (!key) return false
       await store.uploadStored(db, bidNumber, documentName, key, bytes, 'application/msword')
       await files.writeDocument(dataRoot(), bidNumber, documentName, bytes, extension)
       notifyRows()
@@ -517,7 +668,8 @@ function register(): void {
     try {
       const extension = '.pdf'
       const storedName = `${files.documentFileName(documentName)}${extension}`
-      const key = `${files.bidDirName(bidNumber)}/${storedName}`
+      const key = storedObjectKey([files.bidDirName(bidNumber), storedName])
+      if (!key) return { ok: false as const, message: 'Could not save that document.' }
       await store.uploadStored(db, bidNumber, documentName, key, merged.bytes, 'application/pdf')
       await files.writeDocument(dataRoot(), bidNumber, documentName, merged.bytes, extension)
       notifyRows()
@@ -859,9 +1011,11 @@ async function repairParsed(): Promise<void> {
 }
 
 app.whenReady().then(() => {
-  register()
-  createWindow()
-  void repairParsed()
+  void refreshUser().finally(() => {
+    register()
+    createWindow()
+    void repairParsed()
+  })
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

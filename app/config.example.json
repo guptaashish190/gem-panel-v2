@@ -1,5 +1,5 @@
 {
   "gemBaseUrl": "https://bidplus.gem.gov.in",
   "supabaseUrl": "",
-  "supabaseServiceKey": ""
+  "supabaseAnonKey": ""
 }

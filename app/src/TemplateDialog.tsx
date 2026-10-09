@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { TemplateField, TextTemplate } from './panel'
+import type { TemplateField, TemplateProductMode, TextTemplate } from './panel'
 import { PdfMerge } from './components/PdfMerge'
 import { TemplatePreview } from './components/TemplatePreview'
 
@@ -21,6 +21,9 @@ export function TemplateDialog({
   const [preview, setPreview] = useState<string | null>(null)
   const [tab, setTab] = useState<'templates' | 'pdfs'>('templates')
   const [merging, setMerging] = useState(false)
+  const [productMode, setProductMode] = useState<TemplateProductMode>('tagged')
+  const [taggedProductCount, setTaggedProductCount] = useState(0)
+  const [totalProductCount, setTotalProductCount] = useState(0)
   const mergeBusy = useRef(false)
   const setMergeBusy = useCallback((busy: boolean) => {
     mergeBusy.current = busy
@@ -50,24 +53,35 @@ export function TemplateDialog({
   }, [documentName])
 
   useEffect(() => {
+    setProductMode('tagged')
+  }, [templateId, bidNumber])
+
+  useEffect(() => {
     if (templateId == null) return
     let cancel = false
-    setReady(false)
-    setFields([])
+    const replaceProducts = productMode === 'all'
+    if (!replaceProducts) {
+      setReady(false)
+      setFields([])
+    }
     setNotice(null)
-    void window.panel?.previewTemplate(templateId, bidNumber).then((preview) => {
+    void window.panel?.previewTemplate(templateId, bidNumber, productMode).then((preview) => {
       if (cancel) return
       if (!preview) {
         setNotice('Could not fill that template.')
         return
       }
-      setFields(preview.fields)
+      setFields((current) => mergeTemplateFields(current, preview.fields, replaceProducts))
+      setTaggedProductCount(preview.taggedProductCount)
+      setTotalProductCount(preview.totalProductCount)
       setReady(true)
     })
     return () => {
       cancel = true
     }
-  }, [templateId, bidNumber])
+  }, [templateId, bidNumber, productMode])
+
+  const showLoadAll = productMode === 'tagged' && taggedProductCount > 0 && totalProductCount > taggedProductCount
 
   function fieldValues(): Record<string, string> {
     return Object.fromEntries(fields.map((field) => [field.key, field.value]))
@@ -208,6 +222,8 @@ export function TemplateDialog({
                   key={field.key}
                   value={field.value}
                   onChange={(value) => updateField(setFields, field.key, value)}
+                  showLoadAll={showLoadAll}
+                  onLoadAll={() => setProductMode('all')}
                 />
               ) : (
                 <label key={field.key} className="wide">
@@ -224,6 +240,11 @@ export function TemplateDialog({
                       onChange={(event) => updateField(setFields, field.key, event.target.value)}
                     />
                   )}
+                  {field.key === 'products' && showLoadAll ? (
+                    <button type="button" className="btn btn-secondary" onClick={() => setProductMode('all')}>
+                      Load all products
+                    </button>
+                  ) : null}
                 </label>
               ),
             )}
@@ -300,13 +321,42 @@ function parseProductRows(raw: string): ProductRows | null {
   return { columns, rows }
 }
 
-function ProductRowsEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function mergeTemplateFields(
+  current: TemplateField[],
+  next: TemplateField[],
+  replaceProducts: boolean,
+): TemplateField[] {
+  if (current.length === 0 || !replaceProducts) return next
+  const kept = new Map(current.map((field) => [field.key, field.value]))
+  return next.map((field) => {
+    if (field.key === 'products' || field.key === 'productRows') return field
+    const value = kept.get(field.key)
+    return value == null ? field : { ...field, value }
+  })
+}
+
+function ProductRowsEditor({
+  value,
+  onChange,
+  showLoadAll,
+  onLoadAll,
+}: {
+  value: string
+  onChange: (value: string) => void
+  showLoadAll: boolean
+  onLoadAll: () => void
+}) {
   const parsed = parseProductRows(value)
   if (!parsed) {
     return (
       <label className="wide">
         Products
         <textarea rows={3} value={value} onChange={(event) => onChange(event.target.value)} />
+        {showLoadAll ? (
+          <button type="button" className="btn btn-secondary" onClick={onLoadAll}>
+            Load all products
+          </button>
+        ) : null}
       </label>
     )
   }
@@ -367,7 +417,7 @@ function ProductRowsEditor({ value, onChange }: { value: string; onChange: (valu
           </tbody>
         </table>
       </div>
-      <div>
+      <div className="product-grid-actions">
         <button
           type="button"
           className="btn btn-secondary"
@@ -379,6 +429,11 @@ function ProductRowsEditor({ value, onChange }: { value: string; onChange: (valu
         >
           Add product
         </button>
+        {showLoadAll ? (
+          <button type="button" className="btn btn-secondary" onClick={onLoadAll}>
+            Load all products
+          </button>
+        ) : null}
       </div>
     </div>
   )

@@ -33,10 +33,12 @@ export type Summary = {
 }
 
 export type Product = {
+  id: number
   name: string
   quantity: number | null
   deliveryPeriod: string | null
   scheduleNumber: number | null
+  tagged: boolean
 }
 
 export type TenderDocument = {
@@ -122,10 +124,15 @@ export type TemplateField = {
   value: string
 }
 
+export type TemplateProductMode = 'tagged' | 'all'
+
 export type TemplatePreview = {
   id: number
   name: string
   fields: TemplateField[]
+  productMode: TemplateProductMode
+  taggedProductCount: number
+  totalProductCount: number
 }
 
 export type TemplateDownload = 'saved' | 'cancelled' | 'failed'
@@ -150,8 +157,19 @@ export type FetchProgress =
       status: 'downloading' | 'analyzing' | 'downloaded' | 'failed'
     }
 
+export type Account = {
+  email: string
+}
+
+export type AuthResult = { ok: true } | { ok: false; message: string }
+
 export type PanelApi = {
   reachable: () => Promise<{ ok: true } | { ok: false; message: string }>
+  session: () => Promise<Account | null>
+  signIn: (email: string, password: string) => Promise<AuthResult>
+  signUp: (email: string, password: string) => Promise<AuthResult>
+  signOut: () => Promise<void>
+  onSession: (listener: () => void) => () => void
   list: (screen: ScreenName, filters: Filters) => Promise<Summary[]>
   fetch: (keyword: string, pages: number, mode?: 'slate' | 'next') => Promise<{ started: boolean }>
   open: (bidNumber: string) => Promise<TenderDetail | null>
@@ -159,6 +177,7 @@ export type PanelApi = {
   save: (bidNumber: string) => Promise<boolean>
   unsave: (bidNumber: string) => Promise<boolean>
   setStatus: (bidNumber: string, status: TenderStatus | null) => Promise<boolean>
+  setProductTag: (productId: number, tagged: boolean) => Promise<boolean>
   deleteTender: (bidNumber: string) => Promise<boolean>
   reanalyze: (bidNumber: string) => Promise<boolean>
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) => Promise<boolean>
@@ -177,7 +196,11 @@ export type PanelApi = {
   templatePlaceholders: () => Promise<TemplatePlaceholder[]>
   saveTemplate: (fields: { id: number | null; name: string; body: string }) => Promise<boolean>
   removeTemplate: (id: number) => Promise<boolean>
-  previewTemplate: (id: number, bidNumber: string) => Promise<TemplatePreview | null>
+  previewTemplate: (
+    id: number,
+    bidNumber: string,
+    products?: TemplateProductMode,
+  ) => Promise<TemplatePreview | null>
   previewTemplateText: (body: string) => Promise<string | null>
   renderTemplate: (id: number, values: Record<string, string>) => Promise<string | null>
   saveTemplateDocument: (

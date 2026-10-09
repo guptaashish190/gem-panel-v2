@@ -2,6 +2,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('panel', {
   reachable: () => ipcRenderer.invoke('reachable'),
+  session: () => ipcRenderer.invoke('session'),
+  signIn: (email: string, password: string) => ipcRenderer.invoke('sign-in', email, password),
+  signUp: (email: string, password: string) => ipcRenderer.invoke('sign-up', email, password),
+  signOut: () => ipcRenderer.invoke('sign-out'),
+  onSession: (listener: () => void) => {
+    const wrapped = () => listener()
+    ipcRenderer.on('session-changed', wrapped)
+    return () => ipcRenderer.removeListener('session-changed', wrapped)
+  },
   list: (screen: string, filters: unknown) => ipcRenderer.invoke('list', screen, filters),
   fetch: (keyword: string, pages: number, mode?: 'slate' | 'next') =>
     ipcRenderer.invoke('fetch', keyword, pages, mode),
@@ -10,6 +19,7 @@ contextBridge.exposeInMainWorld('panel', {
   save: (bidNumber: string) => ipcRenderer.invoke('save', bidNumber),
   unsave: (bidNumber: string) => ipcRenderer.invoke('unsave', bidNumber),
   setStatus: (bidNumber: string, status: string) => ipcRenderer.invoke('set-status', bidNumber, status),
+  setProductTag: (productId: number, tagged: boolean) => ipcRenderer.invoke('set-product-tag', productId, tagged),
   deleteTender: (bidNumber: string) => ipcRenderer.invoke('delete-tender', bidNumber),
   reanalyze: (bidNumber: string) => ipcRenderer.invoke('reanalyze', bidNumber),
   upload: (bidNumber: string, name: string, data: Uint8Array, filename: string) =>
@@ -30,7 +40,8 @@ contextBridge.exposeInMainWorld('panel', {
   templatePlaceholders: () => ipcRenderer.invoke('template-placeholders'),
   saveTemplate: (fields: unknown) => ipcRenderer.invoke('save-template', fields),
   removeTemplate: (id: number) => ipcRenderer.invoke('remove-template', id),
-  previewTemplate: (id: number, bidNumber: string) => ipcRenderer.invoke('preview-template', id, bidNumber),
+  previewTemplate: (id: number, bidNumber: string, products?: 'tagged' | 'all') =>
+    ipcRenderer.invoke('preview-template', id, bidNumber, products),
   previewTemplateText: (body: string) => ipcRenderer.invoke('preview-template-text', body),
   renderTemplate: (id: number, values: Record<string, string>) => ipcRenderer.invoke('render-template', id, values),
   saveTemplateDocument: (id: number, bidNumber: string, documentName: string, values: Record<string, string>) =>

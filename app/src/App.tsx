@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FetchProgress, Filters, ScreenName as StoredScreen, Summary } from './panel'
+import { AccountScreen } from './AccountScreen'
 import { SettingsPanel } from './SettingsPanel'
 import { ExcelFilter } from './components/ExcelFilter'
 import { RowMenu, type RowMenuState } from './components/RowMenu'
@@ -122,8 +123,15 @@ export function App() {
   const [listKeyword, setListKeyword] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(true)
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null)
+  const [account, setAccount] = useState<{ email: string } | null | undefined>(undefined)
 
   const listRequest = useRef(0)
+
+  const loadAccount = useCallback(async () => {
+    const panel = window.panel
+    if (!panel) return
+    setAccount(await panel.session())
+  }, [])
 
   const refresh = useCallback(async (nextScreen: ScreenName) => {
     if (!window.panel) return
@@ -136,6 +144,7 @@ export function App() {
   useEffect(() => {
     if (!window.panel) {
       setBlocked('the panel cannot reach its records')
+      setAccount(null)
       return
     }
     void window.panel.reachable().then((result) => {
@@ -164,26 +173,31 @@ export function App() {
       }
       setLive((current) => rememberProgress(event, current))
     })
+    void loadAccount()
+    const stopSession = window.panel.onSession(() => {
+      void loadAccount()
+    })
     return () => {
       stopDone()
       stopProgress()
+      stopSession()
     }
-  }, [])
+  }, [loadAccount])
 
   useEffect(() => {
     setRowMenu(null)
   }, [screen])
 
   useEffect(() => {
-    if (blocked !== null || !window.panel || screen === 'settings') return
+    if (blocked !== null || !account || !window.panel || screen === 'settings') return
     void refresh(screen)
     return window.panel.onRow(() => {
       void refresh(screen)
     })
-  }, [blocked, screen, refresh])
+  }, [account, blocked, screen, refresh])
 
   useEffect(() => {
-    if (blocked !== null || !window.panel) return
+    if (blocked !== null || !account || !window.panel) return
     const panel = window.panel
     let stop = false
     const load = () => {
@@ -202,7 +216,7 @@ export function App() {
       stop = true
       stopRow()
     }
-  }, [blocked])
+  }, [account, blocked])
 
   async function onFetch() {
     if (!window.panel || blocked || !keyword.trim()) return
@@ -304,6 +318,16 @@ export function App() {
   const poolCount = screen === 'search' ? fetched.length : rows.length
   const current = SCREENS.find((item) => item.id === screen) ?? SCREENS[0]
 
+  if (account === undefined || blocked === undefined) return <div className="app" />
+  if (!account) {
+    return (
+      <div className="app">
+        {blocked ? <p className="banner">{blocked}</p> : null}
+        <AccountScreen onSignedIn={() => void loadAccount()} />
+      </div>
+    )
+  }
+
   return (
     <div className="app">
       {blocked ? <p className="banner">{blocked}</p> : null}
@@ -313,6 +337,12 @@ export function App() {
             <div className="title-block">
               <h1>GeM Tender Panel</h1>
               <p className="sub">{current.sub}</p>
+              <p className="account-line">
+                <span>{account.email}</span>
+                <button type="button" className="btn btn-ghost" onClick={() => void window.panel?.signOut()}>
+                  Sign out
+                </button>
+              </p>
             </div>
             <div className="stats">
               <Stat value={String(counts.tenders)} label="Tenders" />

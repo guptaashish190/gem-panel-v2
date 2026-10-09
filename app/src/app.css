@@ -361,6 +361,12 @@ label.btn { position: relative; overflow: hidden; cursor: pointer; }
   min-width: 0;
 }
 
+.product-grid-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .product-grid-label {
   color: #8a8a8a;
   font-size: 12px;
@@ -427,6 +433,34 @@ tbody tr:focus-visible { outline: 2px solid #171717; outline-offset: -2px; }
 tbody tr.saved td { background: #e7f0fb; }
 tbody tr.saved:hover td { background: #d7e6f8; }
 tbody tr.saved td:first-child { box-shadow: inset 3px 0 0 #5b8ec9; }
+
+.product-tag-col {
+  width: 40px;
+  padding-right: 4px;
+}
+
+button.product-tag {
+  color: #a3a3a3;
+}
+
+button.product-tag:hover {
+  color: #525252;
+  background: #f4f4f4;
+}
+
+button.product-tag.active {
+  color: #1d4f91;
+}
+
+tbody tr.product-tagged td,
+tbody tr.product-tagged:hover td {
+  background: #eef5fc;
+  cursor: default;
+}
+
+tbody tr.product-tagged td:first-child {
+  box-shadow: inset 3px 0 0 #5b8ec9;
+}
 
 tbody tr.warn td,
 tbody tr.warn:hover td { background: #fff8eb; }
@@ -583,6 +617,54 @@ tbody tr.pending { cursor: default; }
 
 .row-menu button.danger { color: #b42318; }
 .row-menu button.danger:disabled { color: #e4b4b0; }
+
+.account-card {
+  width: min(420px, 100%);
+  margin: 48px auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-card h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.account-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #3a3a3a;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.account-card input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #e4e4e4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: #5c5c5c;
+  font-size: 13px;
+}
 
 .banner {
   margin: 0 0 16px;

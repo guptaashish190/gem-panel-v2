@@ -5,6 +5,11 @@ export type ProductRow = {
   scheduleNumber: number | null
 }
 
+export type DetailProduct = ProductRow & {
+  id: number
+  tagged: boolean
+}
+
 export type ParsedTender = {
   bidEnd: string | null
   offerValidity: string | null
@@ -93,8 +98,9 @@ export type DocumentView = {
   template: boolean
 }
 
-export type TenderDetail = ParsedTender & {
+export type TenderDetail = Omit<ParsedTender, 'products'> & {
   bidNumber: string
+  products: DetailProduct[]
   saved: boolean
   status: TenderStatus | null
   documents: DocumentView[]
@@ -145,10 +151,15 @@ export type TemplateField = {
   value: string
 }
 
+export type TemplateProductMode = 'tagged' | 'all'
+
 export type TemplatePreview = {
   id: number
   name: string
   fields: TemplateField[]
+  productMode: TemplateProductMode
+  taggedProductCount: number
+  totalProductCount: number
 }
 
 export type TemplateDownload = 'saved' | 'cancelled' | 'failed'
